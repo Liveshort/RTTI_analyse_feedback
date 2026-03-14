@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Electron build output
+dist/
+out/
+
+# electron-builder cache
+.webpack/
+node_modules/.cache/
+
+# User data (runtime data, not source)
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+*.swp

@@ -1,0 +1,36 @@
+{
+  "name": "rtti-app",
+  "version": "0.1.0",
+  "description": "RTTI score analysis tool",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "nl.school.rtti-app",
+    "productName": "RTTI App",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "extraResources": [],
+    "files": [
+      "**/*",
+      "!data/**",
+      "!node_modules/.cache/**"
+    ],
+    "asar": true
+  },
+  "devDependencies": {
+    "electron": "^40.8.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "docx": "^8.5.0"
+  }
+}

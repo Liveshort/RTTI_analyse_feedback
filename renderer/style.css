@@ -1,0 +1,579 @@
+/* ── Reset & base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #f4f6f9;
+  --surface:   #ffffff;
+  --border:    #dde3ec;
+  --primary:   #4A90D9;
+  --primary-h: #357abd;
+  --danger:    #d9534f;
+  --success:   #5cb85c;
+  --warn:      #f0ad4e;
+  --text:      #2c3e50;
+  --muted:     #7f8c8d;
+  --radius:    8px;
+  --shadow:    0 2px 8px rgba(0,0,0,.08);
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────────────── */
+#topbar {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--text); color: #fff;
+  padding: 0 20px; height: 50px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3);
+}
+.app-title { font-weight: 700; font-size: 16px; letter-spacing: .5px; margin-right: 8px; }
+#main-nav { display: flex; gap: 2px; flex: 1; }
+.nav-btn {
+  background: transparent; color: rgba(255,255,255,.7);
+  border: none; padding: 0 14px; height: 50px; cursor: pointer;
+  font-size: 13px; transition: background .15s, color .15s;
+}
+.nav-btn:hover { background: rgba(255,255,255,.1); color: #fff; }
+.nav-btn.active { background: var(--primary); color: #fff; }
+.year-badge {
+  background: rgba(255,255,255,.15); padding: 3px 10px;
+  border-radius: 12px; font-size: 12px; white-space: nowrap;
+}
+
+/* ── Main content ─────────────────────────────────────────────────────────── */
+#app { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.screen { display: none; }
+.screen.active { display: block; }
+
+.screen-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;
+  flex-wrap: wrap; gap: 8px;
+}
+.screen-header h2 { font-size: 20px; font-weight: 600; }
+.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Search input */
+.search-input {
+  padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius); font-size: 13px;
+  background: var(--surface); width: 180px;
+}
+.search-input:focus { outline: none; border-color: var(--primary); }
+
+/* Inline label (year selects) */
+.toolbar-inline-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 500; color: rgba(0,0,0,.65);
+}
+.toolbar-inline-label select {
+  padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 4px; font-size: 13px; background: var(--surface);
+}
+
+/* Toolbar */
+.toolbar {
+  display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;
+}
+.toolbar label { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.toolbar select {
+  padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 4px; font-size: 13px; background: var(--surface);
+}
+.toolbar select:disabled { opacity: .5; }
+.toolbar-spacer { flex: 1; }
+.toolbar-right { margin-left: auto; }
+
+/* ── Section headings ─────────────────────────────────────────────────────── */
+.section-heading-jaarlaag {
+  font-size: 13px; font-weight: 700; color: var(--primary);
+  text-transform: uppercase; letter-spacing: .6px;
+  padding: 14px 0 4px; border-bottom: 2px solid var(--primary); margin-bottom: 6px;
+}
+.section-heading-jaarlaag:first-child { padding-top: 0; }
+.section-heading-stamklas {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  padding: 8px 0 2px; margin-bottom: 4px;
+}
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+.card-list { display: flex; flex-direction: column; gap: 6px; }
+.card {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 7px 14px; box-shadow: var(--shadow);
+}
+.card-main { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.card-actions { display: flex; gap: 6px; }
+
+/* Single-row student card */
+.student-card-row { display: flex; align-items: baseline; gap: 6px; flex-wrap: nowrap; }
+.card-sep { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.student-id-inline { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+/* Clickable student name */
+.student-name-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-weight: 600; font-size: 14px; color: var(--primary);
+  text-align: left;
+}
+.student-name-btn:hover { text-decoration: underline; }
+
+.muted { color: var(--muted); font-size: 12px; }
+.small { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.rtti-summary { font-size: 12px; color: var(--primary); font-weight: 500; }
+.hint { color: var(--muted); font-style: italic; padding: 20px 0; }
+
+.volgnummer {
+  display: inline-block; background: #4A90D9; color: #fff;
+  font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+  margin-right: 4px; vertical-align: middle;
+  /* background overridden inline per exam type: blue=regular, red=pta, amber=po */
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.btn-primary {
+  background: var(--primary); color: #fff; border: none;
+  padding: 0 16px; height: 32px; border-radius: var(--radius); cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: background .15s;
+  box-sizing: border-box;
+}
+.btn-primary:hover:not(:disabled) { background: var(--primary-h); }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+.btn-secondary {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  padding: 0 16px; height: 32px; border-radius: var(--radius); cursor: pointer;
+  font-size: 13px; transition: background .15s;
+  box-sizing: border-box;
+}
+.btn-secondary:hover { background: var(--bg); }
+
+.btn-sm {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.btn-sm:hover { background: #e8ecf0; }
+.btn-danger { color: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { background: #fdf0f0; }
+
+/* ── Toggle buttons ───────────────────────────────────────────────────────── */
+.btn-toggle-group { display: flex; flex-wrap: nowrap; gap: 2px; }
+.tog-btn {
+  padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); cursor: pointer; font-size: 12px; font-weight: 500;
+  color: var(--text); white-space: nowrap; transition: background .1s, color .1s;
+}
+.tog-btn:hover { background: #e2e8f0; }
+.tog-btn.selected { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* Jaarlaag buttons: square 30×30 */
+.jl-btn {
+  width: 30px !important;
+  height: 30px !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.jl-locked {
+  opacity: .45 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+}
+
+/* Periode buttons: same size as jl-btn */
+.per-btn {
+  width: 30px !important;
+  height: 30px !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
+
+/* PTA toggle button: checkmark-style, grey unchecked / blue checked */
+.pta-btn {
+  width: 30px; height: 30px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: #e8ecf0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 400; color: #a0acb8;
+  transition: background .1s, color .1s, border-color .1s;
+  flex-shrink: 0;
+}
+.pta-btn[data-checked="true"] {
+  background: var(--primary); color: #fff; border-color: var(--primary);
+  font-weight: 700;
+}
+
+
+/* ── Number spinner (replaces <input type="number">) ──────────────────────── */
+.num-spinner {
+  display: flex; align-items: stretch; height: 30px;
+  border: 1px solid var(--border); border-radius: 4px;
+  overflow: hidden; box-sizing: border-box; background: var(--surface);
+  transition: border-color .12s;
+}
+.num-spinner:focus-within { border-color: var(--primary); }
+.spin-btn {
+  width: 28px; flex-shrink: 0;
+  border: none; background: #e8ecf0; cursor: pointer;
+  font-size: 16px; line-height: 1; color: #5a6472;
+  transition: background .1s;
+  display: flex; align-items: center; justify-content: center;
+}
+.spin-btn:hover { background: #d4dae2; }
+.spin-btn:active { background: #c4cad2; }
+.spin-minus { border-right: 1px solid var(--border); }
+.spin-plus  { border-left:  1px solid var(--border); }
+.spin-val {
+  flex: 1; border: none; outline: none;
+  text-align: center; font-size: 13px; color: var(--text);
+  background: transparent; min-width: 0; padding: 0 2px;
+  font-family: inherit;
+}
+/* Fixed width containers for narrow spinner fields */
+.spinner-wrap-sm { flex: none; width: 108px; }
+.spinner-wrap-xs { flex: none; width: 90px; }
+
+/* Section (Opgave) buttons in questions editor */
+.sec-btn-group { display: flex; flex-wrap: wrap; gap: 2px; max-width: 240px; }
+.sec-btn {
+  min-width: 22px; height: 22px; padding: 0 3px;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg); cursor: pointer; font-size: 10px; font-weight: 600;
+  color: var(--text); transition: background .08s, color .08s; line-height: 20px;
+}
+.sec-btn:hover { background: #e2e8f0; }
+.sec-btn.selected { background: var(--primary); color: #fff; border-color: var(--primary); }
+.sec-btn.locked   { cursor: default; opacity: .6; }
+/* seq mode: empty placeholder buttons, fully inactive */
+.sec-btn-inactive {
+  pointer-events: none; min-width: 22px;
+  background: #c8cdd5 !important; border-color: #9aa0ab !important;
+  opacity: 1 !important;
+}
+
+
+/* Equal-width RTTI buttons in questions table */
+.rtti-btn { min-width: 36px; text-align: center; }
+
+/* Nr display cell in questions table */
+.qi-nr-display {
+  font-size: 12px; font-weight: 600; color: var(--primary);
+  min-width: 32px; text-align: center; padding: 0 4px;
+}
+
+/* ── Forms ────────────────────────────────────────────────────────────────── */
+.form-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.form-group label {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .4px;
+}
+.form-group input, .form-group select {
+  height: 30px; padding: 0 10px; border: 1px solid var(--border);
+  border-radius: 4px; font-size: 13px; background: var(--surface);
+  box-sizing: border-box;
+}
+.form-group input:focus, .form-group select:focus {
+  outline: none; border-color: var(--primary);
+}
+.form-group input::placeholder {
+  color: #b0b8c4; font-style: italic;
+}
+/* CustomSelect inside form-group stretches full width */
+.form-group .csel-host { display: block; width: 100%; }
+.form-group .csel      { display: block; width: 100%; min-width: 0; }
+.form-row { display: flex; gap: 12px; }
+.form-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+.checkbox-list {
+  max-height: 200px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 4px; padding: 8px;
+}
+.checkbox-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 0; font-size: 13px; cursor: pointer;
+}
+
+/* ── Questions table ──────────────────────────────────────────────────────── */
+.questions-scroll {
+  max-height: 420px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.questions-table { width: 100%; border-collapse: collapse; }
+.questions-table th {
+  background: var(--bg); text-align: left; padding: 7px 8px;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1;
+}
+.questions-table td { padding: 5px 6px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+.questions-table tr:last-child td { border-bottom: none; }
+.questions-table input[type="text"],
+.questions-table input[type="number"] {
+  width: 100%; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px;
+}
+
+/* ── CSV preview table ────────────────────────────────────────────────────── */
+.preview-table {
+  width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px;
+  border: 1px solid var(--border);
+}
+.preview-table th {
+  background: var(--bg); padding: 5px 8px; text-align: left;
+  font-weight: 600; border-bottom: 1px solid var(--border);
+}
+.preview-table td { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; }
+.preview-table tr:last-child td { border-bottom: none; }
+
+/* ── Modal ────────────────────────────────────────────────────────────────── */
+#modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center; z-index: 999;
+}
+#modal-overlay.hidden { display: none; }
+#modal-box {
+  background: var(--surface); border-radius: var(--radius);
+  padding: 28px; width: 680px; max-width: 95vw; max-height: 88vh;
+  overflow-y: auto; position: relative;
+  box-shadow: 0 8px 32px rgba(0,0,0,.25);
+}
+#modal-box.modal-xl     { width: 960px; }
+#modal-box.modal-profile { width: 92vw; max-width: 1400px; max-height: 92vh; }
+#modal-box h3 { font-size: 17px; margin-bottom: 16px; }
+#modal-box h4 {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .4px; margin: 14px 0 8px;
+}
+#modal-close {
+  position: absolute; top: 14px; right: 16px;
+  background: none; border: none; font-size: 18px; cursor: pointer; color: var(--muted);
+}
+#modal-close:hover { color: var(--text); }
+
+/* Charts inside modal */
+.chart-wrap {
+  position: relative;  /* required for Chart.js responsive sizing */
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+}
+
+/* ── Toast notifications ──────────────────────────────────────────────────── */
+#toast-container {
+  position: fixed; bottom: 24px; right: 24px;
+  display: flex; flex-direction: column; gap: 8px; z-index: 9999;
+  max-width: 380px;
+}
+.toast {
+  padding: 10px 18px; border-radius: var(--radius);
+  font-size: 13px; font-weight: 500; color: #fff;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .25s, transform .25s;
+  box-shadow: var(--shadow);
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast-info    { background: var(--text); }
+.toast-success { background: var(--success); }
+.toast-error   { background: var(--danger); }
+
+.toast-persistent {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px 10px 16px;
+}
+.toast-persistent span { flex: 1; line-height: 1.4; }
+.toast-dismiss {
+  background: none; border: none; color: rgba(255,255,255,.8);
+  cursor: pointer; font-size: 16px; padding: 0; line-height: 1; flex-shrink: 0;
+}
+.toast-dismiss:hover { color: #fff; }
+
+/* ── Score grid ───────────────────────────────────────────────────────────── */
+.score-group-section { margin-bottom: 28px; }
+.group-heading {
+  font-size: 15px; font-weight: 600; padding: 8px 0 6px; margin-bottom: 4px;
+  border-bottom: 2px solid var(--primary); color: var(--text);
+}
+#score-grid-container { overflow-x: auto; }
+
+/* ── HOT column headers — bold, italic, bottom-aligned ─────────────────────── */
+.handsontable th {
+  white-space: normal !important;
+  word-break: keep-all;
+  line-height: 1 !important;
+  padding-top: 1px !important;
+  padding-bottom: 4px !important;
+  font-weight: bold !important;
+  font-style: italic !important;
+  vertical-align: bottom !important;
+}
+
+/* Question header spans — new order: RTTI, pts (+ gap), section, number */
+/* th is bold+italic; rtti and pts override back to normal weight/style    */
+.hdr-rtti,
+.hdr-pts {
+  display: block;
+  line-height: 1.2;
+  margin: 0;
+  padding: 0;
+  font-size: 11px;
+  font-weight: normal !important;
+  font-style: normal !important;
+}
+.hdr-opgave,
+.hdr-vraag {
+  display: block;
+  line-height: 1.2;
+  margin: 0;
+  padding: 0;
+  font-size: 13px; /* matches other column header text */
+}
+.hdr-rtti   { color: var(--muted, #7f8c8d); }
+.hdr-pts    { color: var(--muted, #7f8c8d); padding-bottom: 8px; } /* gap before section/number */
+.hdr-opgave { color: var(--text,  #2c3e50); }
+.hdr-vraag  { color: var(--text,  #2c3e50); }
+
+/* ── Cell colours (question columns) — set via inline style in renderers ────── */
+/* These classes are kept for legacy / fallback but renderers set inline styles */
+.cell-header-col { background: #f8f9fb !important; font-weight: 500; }
+.cell-green   { background: #d4edda !important; }
+.cell-yellow  { background: #fff3cd !important; }
+.cell-red     { background: #f8d7da !important; }
+.cell-blue    { background: #cce5ff !important; color: #004085 !important; font-weight: 600 !important; }
+.cell-invalid { background: #ff0033 !important; color: #fff !important; font-weight: 700 !important; }
+/* cell-calc no longer used directly; renderers set inline */
+
+code {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; font-size: 12px;
+}
+
+/* ── CustomSelect ─────────────────────────────────────────────────────────── */
+.csel-host { display: inline-block; }
+
+.csel {
+  position: relative;
+  display: inline-block;
+  min-width: 130px;
+  font-size: 13px;
+  user-select: none;
+}
+
+.csel-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  transition: border-color .12s, box-shadow .12s;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.csel-trigger:hover { border-color: #aab; }
+.csel--open .csel-trigger {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(74,144,217,.2);
+}
+.csel--disabled .csel-trigger {
+  opacity: .45;
+  cursor: not-allowed;
+  background: var(--bg);
+}
+
+.csel-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.csel-arrow { font-size: 10px; color: var(--muted); transition: transform .15s; flex-shrink: 0; }
+.csel--open .csel-arrow { transform: rotate(180deg); }
+
+.csel-dropdown {
+  display: none;
+  position: absolute; /* overridden to fixed by JS on open */
+  left: 0;
+  z-index: 9999;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.14);
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.csel--open .csel-dropdown { display: block; }
+
+.csel-option {
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  transition: background .08s;
+}
+.csel-option:hover { background: var(--bg); }
+.csel-option--selected {
+  background: rgba(74,144,217,.12);
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* toolbar label (replaces <label> wrapping a select) */
+.toolbar-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* ── Exam title link (Toetsen tab) ────────────────────────────────────────── */
+.exam-title-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-weight: 600 !important; font-size: 14px; color: var(--primary);
+  text-align: left; font-family: inherit;
+}
+.exam-title-link:hover { text-decoration: underline; }
+
+/* ── Group name button (Groepen tab) ──────────────────────────────────────── */
+.group-name-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-weight: 600 !important; font-size: 14px; color: var(--primary);
+  text-align: left; font-family: inherit;
+}
+.group-name-btn:hover { text-decoration: underline; }
+
+/* ── Group students list in modal ─────────────────────────────────────────── */
+.group-student-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 420px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px;
+}
+.group-student-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; padding: 6px 10px; border-radius: 4px;
+  background: none; border: none; cursor: pointer; text-align: left;
+  font-family: inherit; font-size: 13px; color: var(--text);
+  transition: background .1s;
+}
+.group-student-row:hover { background: var(--bg); }
+.gsrow-name { font-weight: 500; color: var(--primary); }
+.gsrow-id   { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+
+/* ── Disabled spinner overlay ─────────────────────────────────────────────── */
+.spinner-disabled { opacity: .45; pointer-events: none; }
+
+/* ── Toets bewerken btn in scores toolbar ──────────────────────────────────── */
+#btn-edit-exam-scores:disabled { opacity: .4; cursor: not-allowed; }
