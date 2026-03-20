@@ -1,119 +1,110 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="nl">
-<head>
-  <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net;" />
-  <title>RTTI App</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css" />
-  <link rel="stylesheet" href="style.css" />
-</head>
-<body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net;"
+    />
+    <title>RTTI App</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <span class="app-title">RTTI App</span>
+      <nav id="main-nav">
+        <button class="nav-btn active" data-screen="leerlingen">Leerlingen</button>
+        <button class="nav-btn" data-screen="groepen">Groepen</button>
+        <button class="nav-btn" data-screen="toetsen">Toetsen</button>
+        <button class="nav-btn" data-screen="observaties">Observaties</button>
+        <button class="nav-btn" data-screen="rapport">Rapport genereren</button>
+      </nav>
+      <span id="active-year-label" class="year-badge">—</span>
+    </header>
 
-  <header id="topbar">
-    <span class="app-title">RTTI App</span>
-    <nav id="main-nav">
-      <button class="nav-btn active" data-screen="leerlingen">Leerlingen</button>
-      <button class="nav-btn" data-screen="groepen">Groepen</button>
-      <button class="nav-btn" data-screen="toetsen">Toetsen</button>
-      <button class="nav-btn" data-screen="scores">Scores invoeren</button>
-      <button class="nav-btn" data-screen="rapport">Rapport genereren</button>
-    </nav>
-    <span id="active-year-label" class="year-badge">—</span>
-  </header>
-
-  <main id="app">
-
-    <!-- Leerlingen -->
-    <section id="screen-leerlingen" class="screen active">
-      <div class="screen-header">
-        <h2>Leerlingen</h2>
-        <div class="header-actions">
-          <label class="toolbar-inline-label">Schooljaar:</label>
-          <div id="student-year-select" class="csel-host"></div>
-          <input id="student-search" type="search" placeholder="Zoeken…" class="search-input" />
-          <button class="btn-secondary" id="btn-import-students">&#8593; CSV importeren</button>
-          <button class="btn-primary"   id="btn-add-student">+ Leerling toevoegen</button>
+    <main id="app">
+      <!-- Leerlingen -->
+      <section id="screen-leerlingen" class="screen active">
+        <div class="screen-header">
+          <h2>Leerlingen</h2>
+          <div class="header-actions">
+            <label class="toolbar-inline-label">Schooljaar:</label>
+            <div id="student-year-select" class="csel-host"></div>
+            <input id="student-search" type="search" placeholder="Zoeken…" class="search-input" />
+            <button class="btn-secondary" id="btn-import-students">&#8593; CSV importeren</button>
+            <button class="btn-primary" id="btn-add-student">+ Leerling toevoegen</button>
+          </div>
         </div>
-      </div>
-      <div id="student-list" class="card-list"></div>
-    </section>
+        <div id="student-list" class="card-list"></div>
+      </section>
 
-    <!-- Groepen -->
-    <section id="screen-groepen" class="screen">
-      <div class="screen-header">
-        <h2>Groepen</h2>
-        <div class="header-actions">
-          <label class="toolbar-inline-label">Schooljaar:</label>
-          <div id="groups-year-select" class="csel-host"></div>
-          <button class="btn-secondary" id="btn-import-groups">&#8593; CSV importeren</button>
-          <button class="btn-primary"   id="btn-add-group">+ Groep toevoegen</button>
+      <!-- Groepen -->
+      <section id="screen-groepen" class="screen">
+        <div class="screen-header">
+          <h2>Groepen</h2>
+          <div class="header-actions">
+            <label class="toolbar-inline-label">Schooljaar:</label>
+            <div id="groups-year-select" class="csel-host"></div>
+            <button class="btn-secondary" id="btn-import-groups">&#8593; CSV importeren</button>
+            <button class="btn-primary" id="btn-add-group">+ Groep toevoegen</button>
+          </div>
         </div>
-      </div>
-      <div id="group-list" class="card-list"></div>
-    </section>
+        <div id="group-list" class="card-list"></div>
+      </section>
 
-    <!-- Toetsen -->
-    <section id="screen-toetsen" class="screen">
-      <div class="screen-header">
-        <h2>Toetsen</h2>
-        <div class="header-actions">
-          <label class="toolbar-inline-label">Schooljaar:</label>
-          <div id="toetsen-year-select" class="csel-host"></div>
-          <button class="btn-primary" id="btn-add-exam">+ Toets toevoegen</button>
+      <!-- Toetsen -->
+      <section id="screen-toetsen" class="screen">
+        <div class="screen-header">
+          <h2>Toetsen</h2>
+          <div class="header-actions">
+            <label class="toolbar-inline-label">Schooljaar:</label>
+            <div id="toetsen-year-select" class="csel-host"></div>
+            <button class="btn-primary" id="btn-add-exam">+ Toets toevoegen</button>
+          </div>
         </div>
-      </div>
-      <div id="exam-list" class="card-list"></div>
-    </section>
+        <div id="exam-list" class="card-list"></div>
+      </section>
 
-    <!-- Scores invoeren -->
-    <section id="screen-scores" class="screen">
-      <div class="screen-header"><h2>Scores invoeren</h2></div>
-      <div class="toolbar">
-        <span class="toolbar-label">Jaarlaag:</span>
-        <div id="score-jaarlaag-select" class="csel-host"></div>
-        <span class="toolbar-label">Toets:</span>
-        <div id="score-exam-select" class="csel-host"></div>
-        <div class="toolbar-spacer"></div>
-        <button class="btn-secondary" id="btn-edit-exam-scores" disabled style="flex-shrink:0">Toets bewerken</button>
-        <label class="toolbar-label" style="white-space:nowrap">N-term:</label>
-        <div class="num-spinner spinner-wrap-sm" id="score-nterm" data-val="1" data-step="0.1" data-min="0" data-max="3">
-          <button type="button" class="spin-btn spin-minus">&minus;</button>
-          <input class="spin-val" value="1,0" />
-          <button type="button" class="spin-btn spin-plus">+</button>
+      <!-- Observaties -->
+      <section id="screen-observaties" class="screen">
+        <div class="screen-header">
+          <h2>Observaties</h2>
+          <div class="header-actions">
+            <button class="btn-primary" id="btn-add-obs">+ Observatie toevoegen</button>
+          </div>
         </div>
-      </div>
-      <div id="score-grid-container">
-        <p class="hint">Selecteer een jaarlaag en toets om scores in te voeren.</p>
-      </div>
-    </section>
+        <div id="obs-list" class="card-list"></div>
+      </section>
 
-    <!-- Rapport -->
-    <section id="screen-rapport" class="screen">
-      <div class="screen-header"><h2>Rapport genereren</h2></div>
-      <div class="toolbar">
-        <span class="toolbar-label">Toets:</span>
-        <div id="rapport-exam-select" class="csel-host"></div>
+      <!-- Rapport -->
+      <section id="screen-rapport" class="screen">
+        <div class="screen-header"><h2>Rapport genereren</h2></div>
+        <div class="toolbar">
+          <span class="toolbar-label">Toets:</span>
+          <div id="rapport-exam-select" class="csel-host"></div>
+        </div>
+        <div id="rapport-content"><p class="hint">Selecteer een toets.</p></div>
+      </section>
+    </main>
+
+    <div id="modal-overlay" class="hidden">
+      <div id="modal-box">
+        <button id="modal-close">&#x2715;</button>
+        <div id="modal-content"></div>
       </div>
-      <div id="rapport-content"><p class="hint">Selecteer een toets.</p></div>
-    </section>
-
-  </main>
-
-  <div id="modal-overlay" class="hidden">
-    <div id="modal-box">
-      <button id="modal-close">&#x2715;</button>
-      <div id="modal-content"></div>
     </div>
-  </div>
 
-  <div id="toast-container"></div>
+    <div id="toast-container"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
-  <script src="store.js"></script>
-  <script src="custom-select.js"></script>
-  <script src="app.js"></script>
-</body>
+    <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+    <script src="store.js"></script>
+    <script src="custom-select.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
 </html>
