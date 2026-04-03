@@ -83,6 +83,18 @@ body {
   font-size: 12px;
   white-space: nowrap;
 }
+.subject-badge {
+  background: var(--primary);
+  color: #fff;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.hidden {
+  display: none !important;
+}
 
 /* ── Main content ─────────────────────────────────────────────────────────── */
 #app {
@@ -229,6 +241,46 @@ body {
 .card-actions {
   display: flex;
   gap: 6px;
+  align-items: center;
+}
+
+/* Vertical separator between button groups on exam cards */
+.card-vsep {
+  width: 0;
+  height: 18px;
+  border-left: 1px solid #b8c4d0;
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+
+/* Stacked button column inside card-actions */
+.exam-card-btn-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Small square icon-only buttons on exam cards */
+.btn-sm-icon {
+  width: 28px;
+  height: 26px !important;
+  padding: 0 !important;
+  font-size: 15px;
+  line-height: 1 !important;
+  flex-shrink: 0;
+}
+
+/* Consistent-size buttons on exam cards */
+.exam-card-btn {
+  min-width: 120px;
+  height: 26px !important;
+  padding: 4px 10px !important;
+  line-height: 1 !important;
+  white-space: nowrap;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 /* Single-row student card */
@@ -357,6 +409,20 @@ body {
 .btn-danger:hover {
   background: #fdf0f0;
 }
+.btn-sm:disabled,
+.btn-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-sm.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.btn-sm.btn-primary:hover {
+  background: #3578c5;
+  border-color: #3578c5;
+}
 
 /* ── Toggle buttons ───────────────────────────────────────────────────────── */
 .btn-toggle-group {
@@ -441,6 +507,12 @@ body {
   color: #fff;
   border-color: var(--primary);
   font-weight: 700;
+}
+.pta-btn:disabled[data-checked='true'] {
+  background: #a8bcd4;
+  border-color: #a8bcd4;
+  color: #fff;
+  cursor: not-allowed;
 }
 
 /* ── Number spinner (replaces <input type="number">) ──────────────────────── */
@@ -766,6 +838,38 @@ body {
   color: var(--text);
 }
 
+/* ── Exam overview tabs ───────────────────────────────────────────────────── */
+.overview-tab-bar {
+  display: flex;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 16px;
+}
+.overview-tab {
+  flex: 1;
+  padding: 7px 4px;
+  border: none;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: -2px;
+  transition: color 0.15s;
+  white-space: nowrap;
+}
+.overview-tab:hover {
+  color: var(--text);
+}
+.overview-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.overview-tab.selected {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+
 /* Charts inside modal */
 .chart-wrap {
   position: relative; /* required for Chart.js responsive sizing */
@@ -1055,6 +1159,50 @@ code {
   text-decoration: underline;
 }
 
+/* ── Resit / multi-attempt exam cards ────────────────────────────────────── */
+.exam-summary-card {
+  border-left: 3px solid var(--primary);
+}
+
+.attempt-cards-wrapper {
+  margin-left: 28px;
+  margin-top: 0;
+  padding-left: 16px;
+  margin-bottom: 4px;
+}
+
+.exam-attempt-card {
+  position: relative;
+  margin-top: 4px;
+}
+
+/* Horizontal stub at midpoint of each attempt card */
+.exam-attempt-card::before {
+  content: '';
+  position: absolute;
+  left: -18px;
+  top: calc(50% - 1px);
+  width: 16px;
+  height: 2px;
+  background: var(--border);
+}
+
+/* Vertical connector: default goes from above the card down to midpoint (last card) */
+.exam-attempt-card::after {
+  content: '';
+  position: absolute;
+  left: -18px;
+  top: -4px;
+  height: calc(50% + 4px);
+  width: 2px;
+  background: var(--border);
+}
+
+/* Non-last cards: extend vertical line all the way to the bottom to connect to the next card */
+.exam-attempt-card:not(:last-child)::after {
+  height: calc(100% + 4px);
+}
+
 /* ── Group name button (Groepen tab) ──────────────────────────────────────── */
 .group-name-btn {
   background: none;
@@ -1147,4 +1295,82 @@ code {
 .obs-icon-btn:hover {
   border-color: var(--primary) !important;
   background: #f0f5ff !important;
+}
+
+/* ── Startup screen ──────────────────────────────────────────────────────── */
+.startup-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 50px - 48px);
+  gap: 16px;
+}
+.startup-title {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text);
+}
+.startup-hint {
+  font-size: 16px;
+  color: var(--muted);
+}
+.subject-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 200px);
+  gap: 16px;
+  margin-top: 12px;
+}
+.subject-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100px;
+  border-radius: var(--radius);
+  border: 2px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.1s;
+  box-shadow: var(--shadow);
+}
+.subject-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 4px 16px rgba(74, 144, 217, 0.2);
+  transform: translateY(-2px);
+}
+.subject-emoji {
+  font-size: 28px;
+  line-height: 1;
+}
+.subject-label {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ── Subject badge (button) ──────────────────────────────────────────────── */
+button.subject-badge {
+  border: none;
+  cursor: pointer;
+}
+button.subject-badge:hover {
+  opacity: 0.85;
+}
+
+/* ── Wi-filter bar ───────────────────────────────────────────────────────── */
+.wi-filter-bar {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* ── Disabled toggle button (greyed out, not interactive) ────────────────── */
+.tog-btn-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }

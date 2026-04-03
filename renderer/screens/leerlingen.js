@@ -10,6 +10,7 @@ import {
 } from '../app.js';
 import { lerpColor, examTypeColor } from '../utils/colors.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
+import { computeExamStats } from './toetsen.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCREEN: Leerlingen
@@ -90,8 +91,8 @@ export function renderStudentList() {
           </div>
         </div>
         <div class="card-actions">
-          <button class="btn-sm" data-action="edit-student" data-id="${s.id}">Bewerken</button>
-          <button class="btn-sm btn-danger" data-action="del-student" data-id="${s.id}">Verwijderen</button>
+          <button class="btn-sm btn-sm-icon" data-action="edit-student" data-id="${s.id}" title="Leerling bewerken">✎</button>
+          <button class="btn-sm btn-danger btn-sm-icon" data-action="del-student" data-id="${s.id}" title="Leerling verwijderen">🗑</button>
         </div>
       </div>`;
   }
@@ -109,6 +110,21 @@ export function renderStudentList() {
   container
     .querySelectorAll('[data-action="del-student"]')
     .forEach((b) => b.addEventListener('click', () => deleteStudent(Number(b.dataset.id))));
+
+  // Disable Verwijderen for students that have scores (non-blocking)
+  for (const s of students) {
+    Store.studentHasScores(s.id, year).then((has) => {
+      if (!has) return;
+      const btn = container.querySelector(
+        `[data-action="del-student"][data-id="${CSS.escape(String(s.id))}"]`
+      );
+      if (btn) {
+        btn.disabled = true;
+        btn.title =
+          'Er zijn scores ingevoerd voor deze leerling, de leerling kan dus niet worden verwijderd.';
+      }
+    });
+  }
 }
 
 // ── Group students modal ──────────────────────────────────────────────────────
@@ -125,6 +141,20 @@ export async function openGroupStudentsModal(groupId, year) {
     .filter((e) => String(e.jaarlaag) === String(group.jaarlaag ?? '') && e.volgnummer)
     .sort((a, b) => (a.volgnummer ?? 0) - (b.volgnummer ?? 0));
 
+  // Group into families: one column per original exam, with resits attached
+  const _resitMap = {};
+  exams
+    .filter((e) => e.parent_id)
+    .forEach((e) => {
+      (_resitMap[e.parent_id] ??= []).push(e);
+    });
+  const examFamilies = exams
+    .filter((e) => !e.parent_id)
+    .map((e) => ({
+      original: e,
+      resits: (_resitMap[e.id] ?? []).sort((a, b) => (a.attempt ?? 1) - (b.attempt ?? 1)),
+    }));
+
   // Load current-year scores for grade cells
   const scoreMap = {};
   for (const s of students) {
@@ -135,7 +165,7 @@ export async function openGroupStudentsModal(groupId, year) {
   // Per-student dossier (SE) average from full history — mirrors openProfielModal
   const dossierAvgMap = {};
   for (const s of students) {
-    const history = await Store.getStudentHistory(s.id);
+    const history = Store.resolveBestAttempts(await Store.getStudentHistory(s.id));
     const ptaResults = history.filter((h) => h.exam.type === 'pta');
     let sumW = 0,
       sumWG = 0;
@@ -160,6 +190,14 @@ export async function openGroupStudentsModal(groupId, year) {
     });
     if (Object.keys(qs).length === 0) return null;
     return Store.calcResults(exam, qs).grade;
+  }
+
+  function bestGradeForFamily(s, family) {
+    const candidates = [family.original, ...family.resits]
+      .map((e) => ({ exam: e, grade: studentGrade(s, e) }))
+      .filter((x) => x.grade !== null);
+    if (candidates.length === 0) return { grade: null, exam: null };
+    return candidates.reduce((a, b) => (b.grade > a.grade ? b : a));
   }
 
   function calcWeightedAvg(pairs) {
@@ -196,12 +234,12 @@ export async function openGroupStudentsModal(groupId, year) {
   }
 
   // ── Group exams by Periode ─────────────────────────────────────────────────
-  const periodes = [...new Set(exams.map((e) => e.periode ?? '—'))].sort((a, b) =>
+  const periodes = [...new Set(examFamilies.map((f) => f.original.periode ?? '—'))].sort((a, b) =>
     String(a).localeCompare(String(b), undefined, { numeric: true })
   );
   const byPeriode = periodes.map((p) => ({
     p,
-    exs: exams.filter((e) => (e.periode ?? '—') === p),
+    families: examFamilies.filter((f) => (f.original.periode ?? '—') === p),
   }));
 
   // ── Header rows ────────────────────────────────────────────────────────────
@@ -218,8 +256,8 @@ export async function openGroupStudentsModal(groupId, year) {
   const periodeCols =
     byPeriode
       .map(
-        ({ p, exs }) =>
-          `<th colspan="${exs.length}" ${thStyle} style="text-align:center;padding:3px 6px;font-size:11px;
+        ({ p, families }) =>
+          `<th colspan="${families.reduce((sum, f) => sum + 2, 0)}" ${thStyle} style="text-align:center;padding:3px 6px;font-size:11px;
       font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;
       border-bottom:1px solid var(--border);border-right:1px solid #e0e0e0">
       Periode ${escHtml(String(p))}</th>`
@@ -232,13 +270,14 @@ export async function openGroupStudentsModal(groupId, year) {
   // Row 2: exam badges per periode | Jaar | Dossier
   const examBadgeCols =
     byPeriode
-      .map(({ exs }, pi) =>
-        exs
+      .map(({ families }, pi) =>
+        families
           .map(
-            (e, ei) =>
-              `<th style="text-align:center;padding:4px 3px;border-bottom:2px solid var(--border);
-        ${ei === exs.length - 1 && pi < byPeriode.length - 1 ? 'border-right:1px solid #e0e0e0' : ''}">
-        <span class="volgnummer" style="background:${examTypeColor(e)};margin-right:0">${e.volgnummer}</span></th>`
+            (f, fi) =>
+              `<th style="text-align:right;padding:4px 6px;border-bottom:2px solid var(--border)">
+        <span class="volgnummer" style="text-align:center;background:${examTypeColor(f.original)};margin-right:0">${f.original.volgnummer}</span></th>
+        <th style="text-align:center;padding:4px 3px;border-bottom:2px solid var(--border);
+        ${fi === families.length - 1 ? 'border-right:1px solid #e0e0e0' : ''}"></th>`
           )
           .join('')
       )
@@ -262,40 +301,54 @@ export async function openGroupStudentsModal(groupId, year) {
       <span class="student-id-inline">${s.id}</span></td>`;
 
       const examCells = byPeriode
-        .map(({ exs }, pi) =>
-          exs
-            .map((e, ei) => {
-              const g = studentGrade(s, e);
+        .map(({ families }, pi) =>
+          families
+            .map((f, fi) => {
+              const { grade: g, exam: fromExam } = bestGradeForFamily(s, f);
               const label = g !== null ? formatGrade(g) : '—';
               const bc = gradeBorderColor(g);
               const tc = gradeTextColor(g);
               const fw = g !== null && g < 5.5 ? 'bold' : '500';
-              const borderR =
-                ei === exs.length - 1 && pi < byPeriode.length - 1
-                  ? 'border-right:1px solid #e0e0e0'
-                  : '';
-              return `<td style="text-align:center;padding:3px 4px;${rowBg};${borderR}">
-          <span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${bc};
-            border-radius:4px;font-size:12px;font-weight:${fw};color:${tc}">${label}</span></td>`;
+              const borderR = fi === families.length - 1 ? 'border-right:1px solid #e0e0e0' : '';
+              const badgeLetter = fromExam?.parent_id
+                ? (fromExam.description ?? '').trim().charAt(0).toUpperCase() || '?'
+                : '';
+              const badgeCell =
+                `<td style="text-align:left;vertical-align:top;padding:3px 1px 3px 2px;width:30px;${rowBg};${borderR}">` +
+                (badgeLetter
+                  ? `<span title="${(fromExam.description ?? '').trim()}" style="display:inline-flex;align-items:center;justify-content:center;` +
+                    `width:16px;height:16px;border-radius:50%;background:var(--primary);` +
+                    `color:#fff;font-size:8px;font-weight:700;line-height:1;cursor:default">${badgeLetter}</span>`
+                  : '') +
+                `</td>`;
+              return (
+                `<td style="text-align:right;padding:3px 4px;width:50px;${rowBg}">` +
+                `<span style="text-align:center;display:inline-block;min-width:36px;padding:1px 5px;border:2px solid ${bc};` +
+                `border-radius:4px;font-size:12px;font-weight:${fw};color:${tc}">${label}</span></td>` +
+                badgeCell
+              );
             })
             .join('')
         )
         .join('');
 
       // Weighted averages
-      const yearPairs = exams.map((e) => ({ grade: studentGrade(s, e), weging: e.weging }));
+      const yearPairs = examFamilies.map((f) => ({
+        grade: bestGradeForFamily(s, f).grade,
+        weging: f.original.weging,
+      }));
       const yearAvg = calcWeightedAvg(yearPairs);
       const dossierAvg = dossierAvgMap[s.id];
 
       const avgCells =
-        `<td style="text-align:center;padding:3px 4px;border-left:2px solid var(--border);${rowBg}">${
+        `<td style="text-align:center;padding:3px 4px;width:70px;border-left:2px solid var(--border);${rowBg}">${
           yearAvg !== null
             ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(yearAvg)};
               border-radius:4px;font-size:12px;font-weight:${yearAvg < 5.5 ? 'bold' : '500'};color:${gradeTextColor(yearAvg)}"
             >${formatGrade(yearAvg)}</span>`
             : `<span style="color:#aaa">—</span>`
         }</td>` +
-        `<td style="text-align:center;padding:3px 4px;${rowBg}">${
+        `<td style="text-align:center;padding:3px 4px;width:70px;${rowBg}">${
           dossierAvg !== null
             ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(dossierAvg)};
               border-radius:4px;font-size:12px;font-weight:${dossierAvg < 5.5 ? 'bold' : '500'};color:${gradeTextColor(dossierAvg)}"
@@ -337,20 +390,24 @@ export async function openGroupStudentsModal(groupId, year) {
 }
 
 // ── Student profile modal ─────────────────────────────────────────────────
-export async function openProfielModal(studentId, backFn = null, peers = null) {
+export async function openProfielModal(
+  studentId,
+  backFn = null,
+  peers = null,
+  activeTab = 'cijferverloop'
+) {
   const year = leerlingenState.year || Store.getConfigSync().activeYear;
   const students = await Store.getStudents(year);
   const student = students.find((s) => s.id === studentId);
   if (!student) return;
 
-  const history = await Store.getStudentHistory(studentId);
+  const rawHistory = await Store.getStudentHistory(studentId);
+  const history = Store.resolveBestAttempts(rawHistory);
+  // ─── NEW PROFILE MODAL ───────────────────────────────────────────────────
 
   if (history.length === 0) {
     showModal(
-      `
-      <h3>${escHtml(Store.fullName(student))}</h3>
-      <p class="hint">Nog geen scores voor deze leerling.</p>
-    `,
+      `<h3>${escHtml(Store.fullName(student))}</h3><p class="hint">Nog geen scores voor deze leerling.</p>`,
       () => {
         if (backFn)
           document.getElementById('modal-close').addEventListener('click', backFn, { once: true });
@@ -362,80 +419,60 @@ export async function openProfielModal(studentId, backFn = null, peers = null) {
   const results = history.map(({ exam, questionScores }) => ({
     exam,
     res: Store.calcResults(exam, questionScores),
+    questionScores,
   }));
-
-  // ── Weighted avg helper ──────────────────────────────────────────────────
-  function calcWeightedAvg(rs, useSE = false) {
-    let sumW = 0,
-      sumWG = 0;
-    for (const { exam, res } of rs) {
-      if (res.grade === null) continue;
-      const w = Number(useSE ? (exam.weging_se ?? exam.weging ?? 1) : (exam.weging ?? 1));
-      sumW += w;
-      sumWG += w * res.grade;
-    }
-    return sumW > 0 ? Math.round((sumWG / sumW) * 100) / 100 : null;
-  }
-
-  // ── Year groups for graph 1 ──────────────────────────────────────────────
-  const barLabels = results.map((r) => (r.exam.volgnummer ? `${r.exam.volgnummer}` : r.exam.title));
-  const grades = results.map((r) =>
-    r.res.grade !== null ? Math.round(r.res.grade * 10) / 10 : null
-  );
-  const barColors = results.map((r) => examTypeColor(r.exam));
-
-  const yearGroups = [];
-  results.forEach((r, i) => {
-    const yr = r.exam.academic_year ?? '\u2014';
-    if (!yearGroups.length || yearGroups[yearGroups.length - 1].year !== yr)
-      yearGroups.push({ year: yr, startIdx: i, endIdx: i });
-    else yearGroups[yearGroups.length - 1].endIdx = i;
-  });
-
-  const yearGroupPlugin = {
-    id: 'yearGroups',
-    afterDraw(chart) {
-      const {
-        ctx,
-        scales: { x, y },
-      } = chart;
-      const bandY = x.bottom + 4;
-      const bandH = 18;
-      ctx.save();
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textBaseline = 'middle';
-      yearGroups.forEach((g, gi) => {
-        const half = x.width / (2 * barLabels.length);
-        const x0 = x.getPixelForValue(g.startIdx) - half;
-        const x1 = x.getPixelForValue(g.endIdx) + half;
-        ctx.fillStyle = gi % 2 === 0 ? 'rgba(74,144,217,.08)' : 'rgba(0,0,0,.03)';
-        ctx.fillRect(x0, bandY, x1 - x0, bandH);
-        if (gi > 0) {
-          ctx.strokeStyle = '#c8d4e8';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(x0, y.bottom);
-          ctx.lineTo(x0, bandY + bandH);
-          ctx.stroke();
-        }
-        ctx.fillStyle = '#4A90D9';
-        ctx.textAlign = 'center';
-        ctx.fillText(g.year, (x0 + x1) / 2, bandY + bandH / 2);
-      });
-      ctx.restore();
-    },
+  // All attempts (including resits) where the student actually has a grade — used for per-attempt graphs
+  const allResults = rawHistory
+    .map(({ exam, questionScores }) => ({
+      exam,
+      res: Store.calcResults(exam, questionScores),
+      questionScores,
+    }))
+    .filter((r) => r.res.grade !== null);
+  // Label for a single attempt: adds "-I"/"-H" suffix for resit exams
+  const examLabel = (exam) => {
+    const base = exam.volgnummer ? `${exam.volgnummer}` : exam.title;
+    if (!exam.parent_id) return base;
+    const letter = (exam.description ?? '').trim().charAt(0).toUpperCase() || '?';
+    return `${base}-${letter}`;
   };
 
-  // ── Per-year stats for graph 3 ───────────────────────────────────────────
+  // Determine jaarlaag per academic year from exam data
+  const jaarlaagByYear = {};
+  for (const { exam } of results) {
+    if (!jaarlaagByYear[exam.academic_year]) jaarlaagByYear[exam.academic_year] = exam.jaarlaag;
+  }
   const allYears = [...new Set(results.map((r) => r.exam.academic_year))].sort();
-  const ptaResults = results.filter((r) => r.exam.type === 'pta');
-  const avgByYear = allYears.map((yr) =>
-    calcWeightedAvg(results.filter((r) => r.exam.academic_year === yr))
-  );
-  const dossierAvg = calcWeightedAvg(ptaResults, true);
-  const avg3Labels = [...allYears, 'SE'];
-  const avg3Data = [...avgByYear, dossierAvg];
-  const avg3Colors = [...allYears.map(() => '#4A90D9'), '#d9534f'];
+  const yearLabel = (yr) => {
+    const jl = jaarlaagByYear[yr];
+    return jl ? `${yr} (klas ${jl})` : yr;
+  };
+
+  // Default bouw based on student's current jaarlaag
+  const currentJl = parseInt(Store.jaarlaagFromStamklas(student.stamklas ?? '') || '0');
+  const defaultBouw = currentJl >= 4 ? 'bovenbouw' : 'onderbouw';
+
+  // Load observations per year for this student
+  const allObs = Store.getObservatiesSync();
+  const obsPerYear = {};
+  for (const yr of allYears) {
+    const examsInYear = Store.getExamsSync(yr);
+    const rec = await Store.getStudentScores(studentId, yr);
+    const studentObsByExam = rec?.observations ?? {};
+    const counts = {};
+    for (const exam of examsInYear) {
+      const obsIds = exam.obs_ids ?? [];
+      if (!obsIds.length) continue;
+      const checked = studentObsByExam[exam.id] ?? [];
+      for (const obsId of checked) {
+        if (obsIds.includes(obsId)) counts[obsId] = (counts[obsId] ?? 0) + 1;
+      }
+    }
+    obsPerYear[yr] = counts;
+  }
+  const hasObsData = Object.values(obsPerYear).some((c) => Object.keys(c).length > 0);
+
+  const btnW = allYears.length > 3 ? 'min-width:120px' : 'min-width:150px';
 
   showModal(
     `
@@ -444,32 +481,77 @@ export async function openProfielModal(studentId, backFn = null, peers = null) {
         <h3 style="margin:0;flex:none">${escHtml(Store.fullName(student))}</h3>
         <div id="mc-prof-nav" style="flex:1;display:flex;justify-content:center;gap:6px;flex-wrap:wrap"></div>
       </div>
-      <h4 style="margin:0 0 6px">Cijferverloop</h4>
-      <div class="chart-wrap" style="height:300px;margin-bottom:16px"><canvas id="mc-grades"></canvas></div>
-      <div style="display:flex;gap:16px">
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <h4 style="margin:0">RTTI-score per toets</h4>
-            <div id="mc-rtti-year-host" class="csel-host" style="width:180px"></div>
+      <div class="overview-tab-bar">
+        <button class="overview-tab${activeTab === 'cijferverloop' ? ' selected' : ''}" data-tab="cijferverloop">Cijferverloop</button>
+        <button class="overview-tab${activeTab === 'analyse' ? ' selected' : ''}" data-tab="analyse">Analyse</button>
+      </div>
+      <div style="margin:0 -28px -28px;padding:16px 28px 28px;background:var(--bg)">
+
+      <div class="tab-pane${activeTab === 'cijferverloop' ? '' : ' hidden'}" id="tab-cijferverloop">
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px 14px;margin-bottom:16px;background:var(--surface)">
+          <div style="height:280px;position:relative"><canvas id="mc-bouw-chart"></canvas></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px">
+            <div class="btn-toggle-group">
+              <button class="tog-btn mc-bouw-btn${defaultBouw === 'onderbouw' ? ' selected' : ''}" data-bouw="onderbouw" style="min-width:110px">Onderbouw</button>
+              <button class="tog-btn mc-bouw-btn${defaultBouw === 'bovenbouw' ? ' selected' : ''}" data-bouw="bovenbouw" style="min-width:110px">Bovenbouw</button>
+            </div>
           </div>
-          <div class="chart-wrap" style="height:240px"><canvas id="mc-rtti"></canvas></div>
         </div>
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;align-items:center;margin-bottom:8px">
-            <h4 style="margin:0">Gemiddeld cijfer per schooljaar</h4>
-            <div style="height:30px;width:1px"></div>
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px 14px;margin-bottom:16px;background:var(--surface)">
+          <div style="height:260px;position:relative" id="mc-jaar-wrap">
+            <p class="hint" style="margin:8px 0;font-style:italic">Laden\u2026</p>
           </div>
-          <div class="chart-wrap" style="height:240px"><canvas id="mc-avg"></canvas></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px;flex-wrap:wrap">
+            <div class="btn-toggle-group" id="mc-jaar-btns">
+              ${allYears
+                .map(
+                  (yr, i) =>
+                    `<button class="tog-btn mc-jaar-btn${i === allYears.length - 1 ? ' selected' : ''}" data-year="${escHtml(yr)}" style="${btnW}">${escHtml(yearLabel(yr))}</button>`
+                )
+                .join('')}
+            </div>
+          </div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px 14px;margin-bottom:16px;background:var(--surface)">
+          <div id="mc-gem-wrap" style="height:260px;position:relative">
+            <p class="hint" style="margin:8px 0;font-style:italic">Laden\u2026</p>
+          </div>
         </div>
       </div>
+
+      <div class="tab-pane${activeTab === 'analyse' ? '' : ' hidden'}" id="tab-analyse">
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px 14px;margin-bottom:16px;background:var(--surface)">
+          <div style="height:260px;position:relative"><canvas id="mc-rtti-chart"></canvas></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px;flex-wrap:wrap">
+            <div class="btn-toggle-group" id="mc-rtti-btns">
+              ${allYears
+                .map(
+                  (yr, i) =>
+                    `<button class="tog-btn mc-rtti-btn${i === allYears.length - 1 ? ' selected' : ''}" data-year="${escHtml(yr)}" style="${btnW}">${escHtml(yearLabel(yr))}</button>`
+                )
+                .join('')}
+              <button class="tog-btn mc-rtti-btn" data-year="se" style="${btnW}">Examendossier</button>
+            </div>
+          </div>
+        </div>
+        ${
+          hasObsData
+            ? `
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px 14px;margin-bottom:16px;background:var(--surface)">
+          <div style="height:260px;position:relative"><canvas id="mc-obs-chart"></canvas></div>
+        </div>
+        `
+            : ''
+        }
+      </div>
+
+      </div>
     </div>
-  `,
+    `,
     (el) => {
-      // X button: go back to previous screen if backFn provided, otherwise just close
       if (backFn)
         document.getElementById('modal-close').addEventListener('click', backFn, { once: true });
 
-      // Wire prev/next navigation
       if (peers && peers.length > 1) {
         const navEl = el.querySelector('#mc-prof-nav');
         const idx = peers.findIndex((p) => p.id === studentId);
@@ -479,309 +561,943 @@ export async function openProfielModal(studentId, backFn = null, peers = null) {
           const pb = document.createElement('button');
           pb.className = 'btn-secondary btn-sm';
           pb.textContent = `← Vorige (${Store.fullName(prev)})`;
-          pb.addEventListener('click', () => openProfielModal(prev.id, backFn, peers));
+          pb.addEventListener('click', () => {
+            const tab = el.querySelector('.overview-tab.selected')?.dataset.tab ?? 'cijferverloop';
+            openProfielModal(prev.id, backFn, peers, tab);
+          });
           navEl.appendChild(pb);
         }
         if (next) {
           const nb = document.createElement('button');
           nb.className = 'btn-secondary btn-sm';
           nb.textContent = `Volgende (${Store.fullName(next)}) →`;
-          nb.addEventListener('click', () => openProfielModal(next.id, backFn, peers));
+          nb.addEventListener('click', () => {
+            const tab = el.querySelector('.overview-tab.selected')?.dataset.tab ?? 'cijferverloop';
+            openProfielModal(next.id, backFn, peers, tab);
+          });
           navEl.appendChild(nb);
         }
       }
-      // Double-rAF: wait two paint frames so fullscreen layout fully settles before Chart.js measures canvas sizes
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          // ── Shared bar-label plugin factory ─────────────────────────────────
-          // Draws the value on top of each bar; NVT bars use a grey 50%-height stand-in
-          function makeBarLabelPlugin(opts = {}) {
-            return {
-              id: 'barLabels',
+
+      requestAnimationFrame(
+        () =>
+          requestAnimationFrame(() => {
+            // ── Shared plugins ───────────────────────────────────────────────────
+
+            // Diagonal split icon: blue top-right triangle / red bottom-left triangle
+            const splitIconCanvas = (() => {
+              const cv = document.createElement('canvas');
+              cv.width = 12;
+              cv.height = 12;
+              const c = cv.getContext('2d');
+              c.fillStyle = '#4A90D9';
+              c.beginPath();
+              c.moveTo(0, 0);
+              c.lineTo(12, 0);
+              c.lineTo(12, 12);
+              c.closePath();
+              c.fill();
+              c.fillStyle = '#d9534f';
+              c.beginPath();
+              c.moveTo(0, 0);
+              c.lineTo(0, 12);
+              c.lineTo(12, 12);
+              c.closePath();
+              c.fill();
+              return cv;
+            })();
+
+            const lgUp = {
+              id: '_lgUp',
+              afterLayout(chart) {
+                const lg = chart.legend;
+                if (!lg) return;
+                lg.top -= 10;
+                lg.bottom -= 10;
+              },
+            };
+
+            function makeYearGroupPlugin(yGroups, labelCount) {
+              return {
+                id: '_yg',
+                afterDraw(chart) {
+                  const {
+                    ctx,
+                    scales: { x, y },
+                  } = chart;
+                  const bandY = x.bottom + 4;
+                  const bandH = 18;
+                  ctx.save();
+                  ctx.font = 'bold 11px sans-serif';
+                  ctx.textBaseline = 'middle';
+                  yGroups.forEach((g, gi) => {
+                    const half = x.width / (2 * labelCount);
+                    const x0 = x.getPixelForValue(g.startIdx) - half;
+                    const x1 = x.getPixelForValue(g.endIdx) + half;
+                    ctx.fillStyle = gi % 2 === 0 ? 'rgba(74,144,217,.08)' : 'rgba(0,0,0,.03)';
+                    ctx.fillRect(x0, bandY, x1 - x0, bandH);
+                    if (gi > 0) {
+                      ctx.strokeStyle = '#c8d4e8';
+                      ctx.lineWidth = 1;
+                      ctx.beginPath();
+                      ctx.moveTo(x0, y.bottom);
+                      ctx.lineTo(x0, bandY + bandH);
+                      ctx.stroke();
+                    }
+                    ctx.fillStyle = '#4A90D9';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(g.label, (x0 + x1) / 2, bandY + bandH / 2);
+                  });
+                  ctx.restore();
+                },
+              };
+            }
+
+            function makeBarLabelPlugin(opts = {}) {
+              return {
+                id: '_bl',
+                afterDatasetsDraw(chart) {
+                  const { ctx } = chart;
+                  chart.data.datasets.forEach((ds, di) => {
+                    const meta = chart.getDatasetMeta(di);
+                    if (meta.hidden) return;
+                    meta.data.forEach((bar, pi) => {
+                      const raw = ds.data[pi];
+                      if (raw === null || raw === undefined) return;
+                      const nvtArr = opts.nvt?.[di];
+                      const isNvt = nvtArr?.[pi] === true;
+                      const text = isNvt
+                        ? 'NVT'
+                        : opts.format
+                          ? opts.format(raw, di, pi)
+                          : String(Math.round(raw));
+                      ctx.save();
+                      ctx.fillStyle = isNvt ? '#8895a4' : '#333';
+                      ctx.font = opts.font || 'bold 9px sans-serif';
+                      ctx.textAlign = 'center';
+                      ctx.textBaseline = 'bottom';
+                      ctx.fillText(text, bar.x, bar.y - 2);
+                      ctx.restore();
+                    });
+                  });
+                },
+              };
+            }
+
+            const errorBarPlugin = {
+              id: '_eb',
               afterDatasetsDraw(chart) {
                 const { ctx } = chart;
                 chart.data.datasets.forEach((ds, di) => {
+                  if (!ds._errorValues) return;
                   const meta = chart.getDatasetMeta(di);
                   if (meta.hidden) return;
                   meta.data.forEach((bar, pi) => {
-                    const raw = ds.data[pi];
-                    if (raw === null || raw === undefined) return;
-                    const nvtArr = opts.nvt?.[di];
-                    const isNvt = nvtArr?.[pi] === true;
-                    const text = isNvt
-                      ? 'NVT'
-                      : opts.format
-                        ? opts.format(raw, di, pi)
-                        : String(Math.round(raw));
+                    const err = ds._errorValues[pi];
+                    if (err == null || err === 0) return;
+                    const yScale = chart.scales.y;
+                    const avg = ds.data[pi] ?? 0;
+                    const yTop = yScale.getPixelForValue(Math.min(avg + err, 10));
+                    const yBot = yScale.getPixelForValue(Math.max(avg - err, 1));
+                    const x0 = bar.x - bar.width / 2;
                     ctx.save();
-                    ctx.fillStyle = isNvt ? '#8895a4' : '#333';
-                    ctx.font = opts.font || 'bold 9px sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'bottom';
-                    ctx.fillText(text, bar.x, bar.y - 2);
+                    ctx.fillStyle = 'rgba(80,80,80,0.18)';
+                    ctx.fillRect(x0, yTop, bar.width, yBot - yTop);
                     ctx.restore();
                   });
                 });
               },
             };
-          }
 
-          // ── Graph 1: Cijferverloop ─────────────────────────────────────────────
-          const gc = new Chart(el.querySelector('#mc-grades'), {
-            type: 'bar',
-            plugins: [
-              yearGroupPlugin,
-              makeBarLabelPlugin({ font: 'bold 10px sans-serif', format: (v) => formatGrade(v) }),
-            ],
-            data: {
-              labels: barLabels,
-              datasets: [
-                {
-                  label: 'Cijfer',
-                  data: grades,
-                  backgroundColor: barColors,
-                  borderColor: barColors.map((c) => c + 'cc'),
-                  borderWidth: 1,
-                  borderRadius: 3,
-                },
-              ],
-            },
-            options: {
-              maintainAspectRatio: false,
-              layout: { padding: { bottom: 32 } },
-              scales: {
-                y: {
-                  min: 1,
-                  max: 10,
-                  ticks: {
-                    stepSize: 0.5,
-                    callback: (v) => (Number.isInteger(v) ? v : ''),
-                  },
-                  grid: {
-                    color: (ctx) =>
-                      Number.isInteger(ctx.tick.value) ? 'rgba(0,0,0,.08)' : 'rgba(0,0,0,.03)',
-                    lineWidth: (ctx) => (Number.isInteger(ctx.tick.value) ? 1 : 0.5),
-                  },
-                },
-                x: { grid: { display: false } },
+            const passLineAnnotation = {
+              passLine: {
+                type: 'line',
+                yMin: 5.5,
+                yMax: 5.5,
+                borderColor: 'rgba(120,120,120,.55)',
+                borderWidth: 1.5,
+                borderDash: [5, 4],
               },
-              plugins: {
-                legend: { display: false },
-                annotation: {
-                  annotations: {
-                    passLine: {
-                      type: 'line',
-                      yMin: 5.5,
-                      yMax: 5.5,
-                      borderColor: 'rgba(120,120,120,.55)',
-                      borderWidth: 1.5,
-                      borderDash: [5, 4],
+            };
+
+            // ── GRAPH 1: Cijferverloop onder- & bovenbouw ────────────────────────
+            const bouwState = { chart: null };
+            function buildBouwChart(bouw) {
+              if (bouwState.chart) {
+                bouwState.chart.destroy();
+                bouwState.chart = null;
+              }
+              const filtered = results.filter((r) => {
+                const jl = parseInt(r.exam.jaarlaag ?? '0');
+                return bouw === 'onderbouw' ? jl >= 1 && jl <= 3 : jl >= 4 && jl <= 6;
+              });
+              const canvas = el.querySelector('#mc-bouw-chart');
+              if (!filtered.length) {
+                if (canvas) {
+                  const c = new Chart(canvas, {
+                    type: 'bar',
+                    data: { labels: [], datasets: [] },
+                    options: { maintainAspectRatio: false },
+                  });
+                  bouwState.chart = c;
+                  pushModalChart(c);
+                }
+                return;
+              }
+              const labels = filtered.map((r) => examLabel(r.exam));
+              const gradeData = filtered.map((r) =>
+                r.res.grade !== null ? Math.round(r.res.grade * 10) / 10 : null
+              );
+              const barColors = filtered.map((r) => examTypeColor(r.exam));
+              const yGroups = [];
+              filtered.forEach((r, i) => {
+                const yr = r.exam.academic_year ?? '—';
+                const lbl = yearLabel(yr);
+                if (!yGroups.length || yGroups[yGroups.length - 1].year !== yr)
+                  yGroups.push({ year: yr, label: lbl, startIdx: i, endIdx: i });
+                else yGroups[yGroups.length - 1].endIdx = i;
+              });
+              bouwState.chart = new Chart(canvas, {
+                type: 'bar',
+                plugins: [
+                  makeYearGroupPlugin(yGroups, labels.length),
+                  makeBarLabelPlugin({
+                    font: 'bold 10px sans-serif',
+                    format: (v) => formatGrade(v),
+                  }),
+                ],
+                data: {
+                  labels,
+                  datasets: [
+                    {
+                      label: 'Cijfer',
+                      data: gradeData,
+                      backgroundColor: barColors,
+                      borderRadius: 3,
                     },
-                  },
+                  ],
                 },
-                tooltip: {
-                  callbacks: {
-                    title: (items) => {
-                      const r = results[items[0].dataIndex];
-                      return (
-                        (r.exam.volgnummer ? `Toets ${r.exam.volgnummer}: ` : '') + r.exam.title
-                      );
+                options: {
+                  maintainAspectRatio: false,
+                  transitions: { resize: { animation: { duration: 0 } } },
+                  layout: { padding: { bottom: 32 } },
+                  scales: {
+                    y: {
+                      min: 1,
+                      max: 10,
+                      ticks: { stepSize: 0.5, callback: (v) => (Number.isInteger(v) ? v : '') },
+                      grid: {
+                        color: (ctx) =>
+                          Number.isInteger(ctx.tick.value) ? 'rgba(0,0,0,.08)' : 'rgba(0,0,0,.03)',
+                      },
                     },
-                    label: (item) => ` Cijfer: ${formatGrade(item.raw)}`,
+                    x: { grid: { display: false } },
                   },
-                },
-              },
-            },
-          });
-
-          // ── Graph 3: Avg grades per year ───────────────────────────────────────
-          const avgChart = new Chart(el.querySelector('#mc-avg'), {
-            type: 'bar',
-            plugins: [
-              makeBarLabelPlugin({ font: 'bold 10px sans-serif', format: (v) => formatGrade(v) }),
-            ],
-            data: {
-              labels: avg3Labels,
-              datasets: [
-                {
-                  label: 'Gemiddeld cijfer',
-                  data: avg3Data,
-                  backgroundColor: avg3Colors,
-                  borderColor: avg3Colors.map((c) => c + 'cc'),
-                  borderWidth: 1,
-                  borderRadius: 3,
-                },
-              ],
-            },
-            options: {
-              maintainAspectRatio: false,
-              layout: { padding: { bottom: 4 } },
-              scales: {
-                y: {
-                  min: 1,
-                  max: 10,
-                  ticks: { stepSize: 1, autoSkip: false },
-                  grid: { color: 'rgba(0,0,0,.06)' },
-                },
-                x: { grid: { display: false } },
-              },
-              plugins: {
-                legend: { display: false },
-                annotation: {
-                  annotations: {
-                    passLine: {
-                      type: 'line',
-                      yMin: 5.5,
-                      yMax: 5.5,
-                      borderColor: 'rgba(120,120,120,.55)',
-                      borderWidth: 1.5,
-                      borderDash: [5, 4],
-                    },
-                  },
-                },
-                tooltip: {
-                  callbacks: {
-                    label: (item) => ` Gemiddeld: ${formatGrade(item.raw)}`,
-                  },
-                },
-              },
-            },
-          });
-
-          // ── Graph 2: RTTI per toets (with year selector) ───────────────────────
-          const profielState = { rttiChart: null };
-
-          function buildRttiChart(selectedYear) {
-            if (profielState.rttiChart) {
-              profielState.rttiChart.destroy();
-              profielState.rttiChart = null;
-            }
-
-            let filtered;
-            if (selectedYear === 'se') {
-              filtered = results.filter((r) => r.exam.type === 'pta');
-            } else {
-              filtered = results.filter((r) => r.exam.academic_year === selectedYear);
-            }
-
-            const canvas = el.querySelector('#mc-rtti');
-            const rLabels = filtered.map((r) =>
-              r.exam.volgnummer ? `${r.exam.volgnummer}` : r.exam.title
-            );
-
-            function avg(cat) {
-              const vals = filtered
-                .map((r) => (r.res[cat] === 'NVT' ? null : r.res[cat]))
-                .filter((v) => v !== null);
-              return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
-            }
-
-            const NVT_CLR = '#c0c8d4';
-            // Helper: map raw value to chart data (NVT → 50 for grey bar at half height)
-            const toVal = (v) => (v === 'NVT' ? 50 : v === null ? null : v);
-            const toClr = (v, c) => (v === 'NVT' ? NVT_CLR : c);
-            const isNvtFn = (v) => v === 'NVT';
-
-            // Add gap + average bar at end
-            const labels = filtered.length ? [...rLabels, null, 'Gem.'] : ['Gem.'];
-            const gap = filtered.length ? [null] : [];
-            const gapB = filtered.length ? [false] : [];
-
-            const cats = { R: '#5cb85c', T1: '#5bc0de', T2: '#f0ad4e', I: '#d9534f' };
-            const datasets = Object.entries(cats).map(([cat, color]) => {
-              const raw = filtered.map((r) => r.res[cat]);
-              const data = [...raw.map(toVal), ...gap, avg(cat)];
-              const colors = [
-                ...raw.map((v) => toClr(v, color)),
-                ...(gap.length ? [null] : []),
-                color,
-              ];
-              const nvtArr = [...raw.map(isNvtFn), ...gapB, false];
-              return { label: cat, data, backgroundColor: colors, nvtArr };
-            });
-
-            // Build nvt map for plugin: { datasetIndex: nvtArray }
-            const nvtMap = {};
-            datasets.forEach((ds, di) => {
-              nvtMap[di] = ds.nvtArr;
-            });
-
-            profielState.rttiChart = new Chart(canvas, {
-              type: 'bar',
-              plugins: [
-                makeBarLabelPlugin({
-                  nvt: nvtMap,
-                  format: (v, di, pi) => {
-                    if (nvtMap[di]?.[pi]) return 'NVT';
-                    return Math.round(v) + '%';
-                  },
-                }),
-                {
-                  id: 'legendMargin',
-                  beforeInit(chart) {
-                    const orig = chart.legend.fit.bind(chart.legend);
-                    chart.legend.fit = function () {
-                      orig();
-                      this.height += 14;
-                    };
-                  },
-                },
-              ],
-              data: {
-                labels,
-                datasets: datasets.map(({ label, data, backgroundColor }) => ({
-                  label,
-                  data,
-                  backgroundColor,
-                })),
-              },
-              options: {
-                maintainAspectRatio: false,
-                layout: { padding: {} },
-                scales: { y: { min: 0, max: 100, ticks: { callback: (v) => v + '%' } } },
-                plugins: {
-                  legend: {
-                    position: 'top',
-                    labels: {
-                      generateLabels(chart) {
-                        const catColors = {
-                          R: '#5cb85c',
-                          T1: '#5bc0de',
-                          T2: '#f0ad4e',
-                          I: '#d9534f',
-                        };
-                        return chart.data.datasets.map((ds, i) => ({
-                          text: ds.label,
-                          fillStyle: catColors[ds.label] ?? ds.backgroundColor,
-                          strokeStyle: catColors[ds.label] ?? ds.backgroundColor,
-                          lineWidth: 0,
-                          hidden: !chart.isDatasetVisible(i),
-                          datasetIndex: i,
-                        }));
+                  plugins: {
+                    legend: { display: false },
+                    title: { display: true, text: 'Cijferverloop', font: { size: 13 } },
+                    annotation: { annotations: passLineAnnotation },
+                    tooltip: {
+                      callbacks: {
+                        title: (items) => {
+                          const r = filtered[items[0].dataIndex];
+                          return (
+                            (r.exam.volgnummer ? `Toets ${r.exam.volgnummer}: ` : '') + r.exam.title
+                          );
+                        },
+                        label: (item) => ` Cijfer: ${formatGrade(item.raw)}`,
                       },
                     },
                   },
                 },
-              },
+              });
+              pushModalChart(bouwState.chart);
+            }
+            // ══ TAB: CIJFERVERLOOP (lazy) ════════════════════════════════════════
+            const cijferverloopInited = { done: false };
+            function initCijferverloop() {
+              if (cijferverloopInited.done) return;
+              cijferverloopInited.done = true;
+
+              buildBouwChart(defaultBouw);
+              el.querySelectorAll('.mc-bouw-btn').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                  el.querySelectorAll('.mc-bouw-btn').forEach((b) =>
+                    b.classList.remove('selected')
+                  );
+                  btn.classList.add('selected');
+                  buildBouwChart(btn.dataset.bouw);
+                });
+              });
+
+              // ── GRAPH 2: Cijferverloop per schooljaar ────────────────────────────
+              const jaarState = { chart: null };
+              async function buildJaarChart(selectedYear) {
+                if (jaarState.chart) {
+                  jaarState.chart.destroy();
+                  jaarState.chart = null;
+                }
+                const wrap = el.querySelector('#mc-jaar-wrap');
+                const filtered = allResults.filter((r) => r.exam.academic_year === selectedYear);
+                if (!filtered.length) return;
+                // Create canvas lazily
+                if (!wrap.querySelector('canvas')) {
+                  wrap.innerHTML = '';
+                  const cv = document.createElement('canvas');
+                  cv.style.cssText = 'position:absolute;inset:0';
+                  wrap.appendChild(cv);
+                }
+                const canvas = wrap.querySelector('canvas');
+                const labels = filtered.map((r) => examLabel(r.exam));
+                const studentGrades = filtered.map((r) =>
+                  r.res.grade !== null ? Math.round(r.res.grade * 10) / 10 : null
+                );
+                const studentBarColors = filtered.map((r) => examTypeColor(r.exam));
+                const examAvgs = [],
+                  examSds = [];
+                for (const { exam } of filtered) {
+                  const stats = await computeExamStats(selectedYear, exam);
+                  examAvgs.push(stats ? parseFloat(stats.avgG.replace(',', '.')) : null);
+                  examSds.push(stats ? parseFloat(stats.sd.replace(',', '.')) : null);
+                }
+                if (!el.isConnected) return;
+                jaarState.chart = new Chart(canvas, {
+                  type: 'bar',
+                  plugins: [
+                    errorBarPlugin,
+                    makeBarLabelPlugin({
+                      font: 'bold 9px sans-serif',
+                      format: (v) => formatGrade(v),
+                    }),
+                    lgUp,
+                  ],
+                  data: {
+                    labels,
+                    datasets: [
+                      {
+                        label: 'Leerling',
+                        data: studentGrades,
+                        backgroundColor: studentBarColors,
+                        borderRadius: 3,
+                      },
+                      {
+                        label: 'Toetsgemiddelde',
+                        data: examAvgs,
+                        backgroundColor: '#9e9e9e',
+                        borderRadius: 3,
+                        _errorValues: examSds,
+                      },
+                    ],
+                  },
+                  options: {
+                    maintainAspectRatio: false,
+                    transitions: { resize: { animation: { duration: 0 } } },
+                    scales: {
+                      y: {
+                        min: 1,
+                        max: 10,
+                        ticks: { stepSize: 0.5, callback: (v) => (Number.isInteger(v) ? v : '') },
+                        grid: {
+                          color: (ctx) =>
+                            Number.isInteger(ctx.tick.value)
+                              ? 'rgba(0,0,0,.08)'
+                              : 'rgba(0,0,0,.03)',
+                        },
+                      },
+                      x: { grid: { display: false } },
+                    },
+                    plugins: {
+                      legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                          font: { size: 11 },
+                          boxWidth: 12,
+                          padding: 10,
+                          usePointStyle: true,
+                          generateLabels(chart) {
+                            const c = '#888';
+                            return [
+                              {
+                                text: 'Leerling',
+                                pointStyle: splitIconCanvas,
+                                strokeStyle: 'transparent',
+                                lineWidth: 0,
+                                fontColor: c,
+                                color: c,
+                                datasetIndex: 0,
+                                hidden: !chart.isDatasetVisible(0),
+                              },
+                              {
+                                text: 'Toetsgemiddelde',
+                                pointStyle: 'rect',
+                                fillStyle: '#9e9e9e',
+                                strokeStyle: 'transparent',
+                                lineWidth: 0,
+                                fontColor: c,
+                                color: c,
+                                datasetIndex: 1,
+                                hidden: !chart.isDatasetVisible(1),
+                              },
+                            ];
+                          },
+                        },
+                      },
+                      title: {
+                        display: true,
+                        text: 'Prestaties ten opzichte van toetsgemiddelden',
+                        font: { size: 13 },
+                      },
+                      annotation: { annotations: passLineAnnotation },
+                      tooltip: {
+                        callbacks: {
+                          title: (items) => {
+                            const r = filtered[items[0].dataIndex];
+                            return `Toets ${examLabel(r.exam)}: ${r.exam.title}`;
+                          },
+                        },
+                      },
+                    },
+                  },
+                });
+                pushModalChart(jaarState.chart);
+              }
+              buildJaarChart(allYears[allYears.length - 1]);
+              el.querySelectorAll('.mc-jaar-btn').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                  el.querySelectorAll('.mc-jaar-btn').forEach((b) =>
+                    b.classList.remove('selected')
+                  );
+                  btn.classList.add('selected');
+                  buildJaarChart(btn.dataset.year);
+                });
+              });
+
+              // ── GRAPH 3: Verloop gemiddelde cijfer (async) ───────────────────────
+              (async () => {
+                const gemWrap = el.querySelector('#mc-gem-wrap');
+                if (!gemWrap) return;
+
+                // Helper: weighted average for a student's results in one year.
+                // Groups original exams with their resits; only the best grade per group counts once.
+                function yearAvg(examList, scoreMap) {
+                  const resitsByParent = {};
+                  examList
+                    .filter((e) => e.parent_id)
+                    .forEach((e) => {
+                      (resitsByParent[e.parent_id] ??= []).push(e);
+                    });
+                  let sumW = 0,
+                    sumWG = 0;
+                  for (const e of examList) {
+                    if (e.parent_id) continue; // resits are handled together with their original
+                    const group = [e, ...(resitsByParent[e.id] ?? [])];
+                    let bestGrade = null;
+                    for (const attempt of group) {
+                      const examScores = scoreMap[attempt.id];
+                      if (!examScores || Object.keys(examScores).length === 0) continue;
+                      const qs = {};
+                      attempt.questions.forEach((q) => {
+                        const v = examScores[q.id];
+                        if (v !== undefined) qs[q.id] = v;
+                      });
+                      const res = Store.calcResults(attempt, qs);
+                      if (res.grade !== null && (bestGrade === null || res.grade > bestGrade))
+                        bestGrade = res.grade;
+                    }
+                    if (bestGrade === null) continue;
+                    const w = Number(e.weging ?? 1);
+                    sumW += w;
+                    sumWG += w * bestGrade;
+                  }
+                  return sumW > 0 ? sumWG / sumW : null;
+                }
+
+                // Helper: PTA weighted average across full history for one student
+                function ptaAvg(hist) {
+                  let sumW = 0,
+                    sumWG = 0;
+                  for (const { exam, questionScores } of hist) {
+                    if (exam.type !== 'pta') continue;
+                    const res = Store.calcResults(exam, questionScores);
+                    if (res.grade === null) continue;
+                    const w = Number(exam.weging_se ?? exam.weging ?? 1);
+                    sumW += w;
+                    sumWG += w * res.grade;
+                  }
+                  return sumW > 0 ? sumWG / sumW : null;
+                }
+
+                // Student's own weighted averages per year
+                const studentYearAvgs = {};
+                for (const yr of allYears) {
+                  const examsInYear = Store.getExamsSync(yr);
+                  const rec = await Store.getStudentScores(studentId, yr);
+                  studentYearAvgs[yr] = yearAvg(examsInYear, rec?.scores ?? {});
+                }
+                const studentPtaAvg = ptaAvg(history);
+
+                // Jaarlaag averages per year
+                const jlYearAvgs = {};
+                for (const yr of allYears) {
+                  const jl = String(jaarlaagByYear[yr] ?? '');
+                  if (!jl) {
+                    jlYearAvgs[yr] = null;
+                    continue;
+                  }
+                  const studentsInYear = Store.getStudentsSync(yr);
+                  const peers = studentsInYear.filter(
+                    (s) => Store.jaarlaagFromStamklas(s.stamklas ?? '') === jl
+                  );
+                  const examsInYear = Store.getExamsSync(yr);
+                  const peerAvgs = [];
+                  for (const s of peers) {
+                    // Use already-computed avg for the current student to avoid double loading
+                    if (s.id === studentId) {
+                      if (studentYearAvgs[yr] !== null && studentYearAvgs[yr] !== undefined)
+                        peerAvgs.push(studentYearAvgs[yr]);
+                      continue;
+                    }
+                    const rec = await Store.getStudentScores(s.id, yr);
+                    const avg = yearAvg(examsInYear, rec?.scores ?? {});
+                    if (avg !== null) peerAvgs.push(avg);
+                  }
+                  jlYearAvgs[yr] =
+                    peerAvgs.length > 0
+                      ? peerAvgs.reduce((a, b) => a + b, 0) / peerAvgs.length
+                      : null;
+                }
+
+                // Jaarlaag SE average (current jaarlaag, PTA weighted avg per student)
+                const seJl = String(jaarlaagByYear[allYears[allYears.length - 1]] ?? currentJl);
+                const studentsForSe = Store.getStudentsSync(year).filter(
+                  (s) => Store.jaarlaagFromStamklas(s.stamklas ?? '') === seJl
+                );
+                const peerPtaAvgs = [];
+                if (studentPtaAvg !== null) peerPtaAvgs.push(studentPtaAvg); // include current student
+                for (const s of studentsForSe) {
+                  if (s.id === studentId) continue; // already added above
+                  const hist = Store.resolveBestAttempts(await Store.getStudentHistory(s.id));
+                  const avg = ptaAvg(hist);
+                  if (avg !== null) peerPtaAvgs.push(avg);
+                }
+                const jlPtaAvg =
+                  peerPtaAvgs.length > 0
+                    ? peerPtaAvgs.reduce((a, b) => a + b, 0) / peerPtaAvgs.length
+                    : null;
+
+                if (!el.isConnected) return;
+
+                // Build chart data
+                const xLabels = [...allYears.map(yearLabel), 'SE'];
+                const leerlingData = [...allYears.map((yr) => studentYearAvgs[yr]), studentPtaAvg];
+                const leerlingColors = [...allYears.map(() => '#4A90D9'), '#d9534f'];
+                const jlData = [...allYears.map((yr) => jlYearAvgs[yr]), jlPtaAvg];
+
+                gemWrap.innerHTML = '';
+                const cv = document.createElement('canvas');
+                cv.style.cssText = 'position:absolute;inset:0';
+                gemWrap.appendChild(cv);
+
+                pushModalChart(
+                  new Chart(cv, {
+                    type: 'bar',
+                    plugins: [
+                      makeBarLabelPlugin({
+                        font: 'bold 9px sans-serif',
+                        format: (v) => formatGrade(v),
+                      }),
+                      lgUp,
+                    ],
+                    data: {
+                      labels: xLabels,
+                      datasets: [
+                        {
+                          label: 'Leerling',
+                          data: leerlingData,
+                          backgroundColor: leerlingColors,
+                          borderRadius: 3,
+                        },
+                        {
+                          label: 'Jaarlaaggemiddelde',
+                          data: jlData,
+                          backgroundColor: '#9e9e9e',
+                          borderRadius: 3,
+                        },
+                      ],
+                    },
+                    options: {
+                      maintainAspectRatio: false,
+                      transitions: { resize: { animation: { duration: 0 } } },
+                      scales: {
+                        y: {
+                          min: 1,
+                          max: 10,
+                          ticks: { stepSize: 1, callback: (v) => (Number.isInteger(v) ? v : '') },
+                          grid: { color: 'rgba(0,0,0,.06)' },
+                        },
+                        x: { grid: { display: false } },
+                      },
+                      plugins: {
+                        legend: {
+                          display: true,
+                          position: 'top',
+                          labels: {
+                            font: { size: 11 },
+                            boxWidth: 12,
+                            padding: 10,
+                            usePointStyle: true,
+                            generateLabels(chart) {
+                              const c = '#888';
+                              return [
+                                {
+                                  text: 'Leerling',
+                                  pointStyle: splitIconCanvas,
+                                  strokeStyle: 'transparent',
+                                  lineWidth: 0,
+                                  fontColor: c,
+                                  color: c,
+                                  datasetIndex: 0,
+                                  hidden: !chart.isDatasetVisible(0),
+                                },
+                                {
+                                  text: 'Jaarlaaggemiddelde',
+                                  pointStyle: 'rect',
+                                  fillStyle: '#9e9e9e',
+                                  strokeStyle: 'transparent',
+                                  lineWidth: 0,
+                                  fontColor: c,
+                                  color: c,
+                                  datasetIndex: 1,
+                                  hidden: !chart.isDatasetVisible(1),
+                                },
+                              ];
+                            },
+                          },
+                        },
+                        annotation: { annotations: passLineAnnotation },
+                        title: {
+                          display: true,
+                          text: 'Verloop gemiddelde cijfer',
+                          font: { size: 13 },
+                        },
+                        tooltip: {
+                          callbacks: {
+                            label: (item) => ` ${item.dataset.label}: ${formatGrade(item.raw)}`,
+                          },
+                        },
+                      },
+                    },
+                  })
+                );
+              })(); // end graph 3 async
+            } // end initCijferverloop
+
+            // ══ TAB: ANALYSE (lazy) ═══════════════════════════════════════════════
+            const analyseInited = { done: false };
+            function initAnalyse() {
+              if (analyseInited.done) return;
+              analyseInited.done = true;
+
+              // ── GRAPH: RTTI per schooljaar ─────────────────────────────────────
+              const NVT_CLR = '#c0c8d4';
+              const rttiState = { chart: null };
+
+              const dlAbovePctNvt = {
+                id: '_dapn',
+                afterDatasetsDraw(chart) {
+                  const { ctx } = chart;
+                  chart.data.datasets.forEach((ds, i) => {
+                    const meta = chart.getDatasetMeta(i);
+                    if (meta.hidden) return;
+                    meta.data.forEach((bar, j) => {
+                      const v = ds.data[j];
+                      if (v == null) return;
+                      const isNvt = ds.nvtArr?.[j] === true;
+                      const isZero = !isNvt && v === 0;
+
+                      // Draw a thin visible stub for 0% bars
+                      if (isZero) {
+                        const bgColor = Array.isArray(ds.backgroundColor)
+                          ? ds.backgroundColor[j]
+                          : ds.backgroundColor;
+                        ctx.save();
+                        ctx.fillStyle = bgColor;
+                        ctx.fillRect(bar.x - bar.width / 2, bar.base - 3, bar.width, 3);
+                        ctx.restore();
+                      }
+
+                      // Skip label when bar is tall enough to be self-evident but too short for text (non-zero, non-NVT)
+                      if (!isNvt && !isZero && bar.y >= bar.base - 12) return;
+
+                      ctx.save();
+                      ctx.fillStyle = isNvt ? '#8895a4' : '#444';
+                      ctx.font = 'bold 10px sans-serif';
+                      ctx.textAlign = 'center';
+                      ctx.textBaseline = 'bottom';
+                      // For 0% bars, label sits just above the stub
+                      const labelY = isZero ? bar.base - 5 : bar.y - 1;
+                      ctx.fillText(isNvt ? 'NVT' : v + '%', bar.x, labelY);
+                      ctx.restore();
+                    });
+                  });
+                },
+              };
+              const rttiGenLabels = (chart) =>
+                chart.data.datasets.map((ds, i) => ({
+                  text: ds.label,
+                  fillStyle: ds._legendColor,
+                  strokeStyle: 'transparent',
+                  lineWidth: 0,
+                  borderRadius: 2,
+                  hidden: !chart.isDatasetVisible(i),
+                  datasetIndex: i,
+                }));
+
+              function buildRttiChart(selectedYear) {
+                if (rttiState.chart) {
+                  rttiState.chart.destroy();
+                  rttiState.chart = null;
+                }
+                const filtered =
+                  selectedYear === 'se'
+                    ? allResults.filter((r) => r.exam.type === 'pta')
+                    : allResults.filter((r) => r.exam.academic_year === selectedYear);
+                const canvas = el.querySelector('#mc-rtti-chart');
+                const rLabels = filtered.map((r) => examLabel(r.exam));
+                const avg = (cat) => {
+                  const vals = filtered
+                    .map((r) => (r.res[cat] === 'NVT' ? null : r.res[cat]))
+                    .filter((v) => v !== null);
+                  return vals.length
+                    ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length)
+                    : null;
+                };
+                const toVal = (v) => (v === 'NVT' ? 50 : v === null ? null : v);
+                const toClr = (v, c) => (v === 'NVT' ? NVT_CLR : c);
+                const labels = [...rLabels, 'Gem.'];
+                const cats = { R: '#5cb85c', T1: '#5bc0de', T2: '#f0ad4e', I: '#d9534f' };
+                const datasets = Object.entries(cats).map(([cat, color]) => {
+                  const raw = filtered.map((r) => r.res[cat]);
+                  return {
+                    label: cat,
+                    data: [...raw.map(toVal), avg(cat)],
+                    backgroundColor: [...raw.map((v) => toClr(v, color)), color],
+                    nvtArr: [...raw.map((v) => v === 'NVT'), false],
+                    _legendColor: color,
+                  };
+                });
+                const nvtMap = {};
+                datasets.forEach((ds, di) => {
+                  nvtMap[di] = ds.nvtArr;
+                });
+                rttiState.chart = new Chart(canvas, {
+                  type: 'bar',
+                  plugins: [dlAbovePctNvt, lgUp],
+                  data: {
+                    labels,
+                    datasets: datasets.map(
+                      ({ label, data, backgroundColor, _legendColor, nvtArr }) => ({
+                        label,
+                        data,
+                        backgroundColor,
+                        _legendColor,
+                        nvtArr,
+                      })
+                    ),
+                  },
+                  options: {
+                    maintainAspectRatio: false,
+                    transitions: { resize: { animation: { duration: 0 } } },
+                    scales: { y: { min: 0, max: 100, ticks: { callback: (v) => v + '%' } } },
+                    plugins: {
+                      legend: {
+                        position: 'top',
+                        labels: {
+                          font: { size: 11 },
+                          boxWidth: 12,
+                          padding: 10,
+                          generateLabels: rttiGenLabels,
+                        },
+                      },
+                      title: { display: true, text: 'RTTI-scores per toets', font: { size: 13 } },
+                      tooltip: {
+                        callbacks: {
+                          title: (items) => {
+                            const r = filtered[items[0].dataIndex];
+                            if (!r) return 'Gemiddelde';
+                            return `Toets ${examLabel(r.exam)}: ${r.exam.title}`;
+                          },
+                        },
+                      },
+                    },
+                  },
+                });
+                pushModalChart(rttiState.chart);
+              }
+              buildRttiChart(allYears[allYears.length - 1]);
+              el.querySelectorAll('.mc-rtti-btn').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                  el.querySelectorAll('.mc-rtti-btn').forEach((b) =>
+                    b.classList.remove('selected')
+                  );
+                  btn.classList.add('selected');
+                  buildRttiChart(btn.dataset.year);
+                });
+              });
+
+              // ── GRAPH: Observaties per schooljaar ──────────────────────────────
+              if (hasObsData) {
+                const xEntries = [];
+                const yGroupsObs = [];
+                let idx = 0;
+                for (const yr of allYears) {
+                  const counts = obsPerYear[yr];
+                  const obsIds = Object.keys(counts).filter((id) => counts[id] > 0);
+                  if (!obsIds.length) continue;
+                  const startIdx = idx;
+                  for (const obsId of obsIds) {
+                    const o = allObs.find((ob) => ob.id === obsId);
+                    xEntries.push({
+                      icon: o?.icon ?? '?',
+                      name: o?.naam ?? obsId,
+                      count: counts[obsId],
+                    });
+                    idx++;
+                  }
+                  yGroupsObs.push({ label: yearLabel(yr), startIdx, endIdx: idx - 1 });
+                }
+                const obsCanvas = el.querySelector('#mc-obs-chart');
+                if (obsCanvas && xEntries.length) {
+                  pushModalChart(
+                    new Chart(obsCanvas, {
+                      type: 'bar',
+                      plugins: [
+                        makeYearGroupPlugin(yGroupsObs, xEntries.length),
+                        {
+                          id: '_obsLabelTooltip',
+                          afterEvent(chart, args) {
+                            const { event } = args;
+                            const xScale = chart.scales.x;
+                            let tip = document.getElementById('_obs-label-tip');
+                            if (!tip) {
+                              tip = document.createElement('div');
+                              tip.id = '_obs-label-tip';
+                              tip.style.cssText =
+                                'position:fixed;background:#333;color:#fff;padding:3px 8px;border-radius:4px;font-size:12px;pointer-events:none;z-index:9999;display:none;white-space:nowrap';
+                              document.body.appendChild(tip);
+                            }
+                            const inLabelArea =
+                              event.y > chart.chartArea.bottom && event.y <= chart.height;
+                            if (!inLabelArea) {
+                              tip.style.display = 'none';
+                              return;
+                            }
+                            let found = -1;
+                            for (let i = 0; i < xEntries.length; i++) {
+                              if (Math.abs(event.x - xScale.getPixelForTick(i)) < 20) {
+                                found = i;
+                                break;
+                              }
+                            }
+                            if (found < 0) {
+                              tip.style.display = 'none';
+                              return;
+                            }
+                            const rect = chart.canvas.getBoundingClientRect();
+                            tip.textContent = xEntries[found].name;
+                            tip.style.left = rect.left + event.x + 12 + 'px';
+                            tip.style.top = rect.top + event.y - 28 + 'px';
+                            tip.style.display = 'block';
+                          },
+                          afterDestroy() {
+                            document.getElementById('_obs-label-tip')?.remove();
+                          },
+                        },
+                        {
+                          id: '_dlAboveObs',
+                          afterDatasetsDraw(chart) {
+                            const { ctx } = chart;
+                            chart.data.datasets.forEach((ds, di) => {
+                              chart.getDatasetMeta(di).data.forEach((bar, j) => {
+                                const v = ds.data[j];
+                                if (!v || bar.y >= bar.base - 12) return;
+                                ctx.save();
+                                ctx.fillStyle = '#444';
+                                ctx.font = 'bold 10px sans-serif';
+                                ctx.textAlign = 'center';
+                                ctx.textBaseline = 'bottom';
+                                ctx.fillText(String(v), bar.x, bar.y - 1);
+                                ctx.restore();
+                              });
+                            });
+                          },
+                        },
+                      ],
+                      data: {
+                        labels: xEntries.map((e) => e.icon),
+                        datasets: [
+                          {
+                            data: xEntries.map((e) => e.count),
+                            backgroundColor: '#4A90D9',
+                            borderRadius: 3,
+                          },
+                        ],
+                      },
+                      options: {
+                        maintainAspectRatio: false,
+                        layout: { padding: { bottom: 32 } },
+                        plugins: {
+                          legend: { display: false },
+                          title: {
+                            display: true,
+                            text: 'Observaties per schooljaar',
+                            font: { size: 13 },
+                          },
+                        },
+                        scales: {
+                          x: { ticks: { font: { size: 13 }, maxRotation: 0 } },
+                          y: {
+                            beginAtZero: true,
+                            ticks: { stepSize: 1, precision: 0 },
+                            afterFit(s) {
+                              s.paddingTop = 25;
+                            },
+                          },
+                        },
+                      },
+                    })
+                  );
+                }
+              }
+            }
+
+            // Tab switching
+            const tabInited = new Set([activeTab]);
+            function switchTab(name) {
+              el.querySelectorAll('.overview-tab').forEach((b) =>
+                b.classList.toggle('selected', b.dataset.tab === name)
+              );
+              el.querySelectorAll('.tab-pane').forEach((p) =>
+                p.classList.toggle('hidden', p.id !== `tab-${name}`)
+              );
+              if (!tabInited.has(name)) {
+                tabInited.add(name);
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => {
+                    if (name === 'analyse') initAnalyse();
+                    else if (name === 'cijferverloop') initCijferverloop();
+                  })
+                );
+              }
+            }
+            el.querySelectorAll('.overview-tab').forEach((btn) => {
+              btn.addEventListener('click', () => switchTab(btn.dataset.tab));
             });
-            pushModalChart(profielState.rttiChart);
-          }
-
-          const rttiyearSel = new CustomSelect(el.querySelector('#mc-rtti-year-host'), {
-            placeholder: '\u2014 kies jaar \u2014',
-            onChange: (val) => buildRttiChart(val),
-          });
-          rttiyearSel.setOptions([
-            ...allYears.map((y) => ({ value: y, label: y })),
-            { value: 'se', label: 'Examendossier' },
-          ]);
-          const initYear = allYears[allYears.length - 1];
-          rttiyearSel.setValue(initYear);
-          buildRttiChart(initYear);
-
-          pushModalChart(gc);
-          pushModalChart(avgChart);
-        })
+            // Initialize whichever tab is active first
+            if (activeTab === 'analyse') initAnalyse();
+            else initCijferverloop();
+          }) // end inner rAF
       ); // end double-requestAnimationFrame
     },
     'modal-profile'

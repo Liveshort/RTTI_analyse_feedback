@@ -6,7 +6,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net;"
     />
-    <title>RTTI App</title>
+    <title>Maatwerk</title>
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css"
@@ -14,21 +14,31 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header id="topbar">
-      <span class="app-title">RTTI App</span>
+    <header id="topbar" class="hidden">
+      <span class="app-title">Maatwerk</span>
       <nav id="main-nav">
-        <button class="nav-btn active" data-screen="leerlingen">Leerlingen</button>
+        <button class="nav-btn" data-screen="leerlingen">Leerlingen</button>
         <button class="nav-btn" data-screen="groepen">Groepen</button>
         <button class="nav-btn" data-screen="toetsen">Toetsen</button>
         <button class="nav-btn" data-screen="observaties">Observaties</button>
         <button class="nav-btn" data-screen="rapport">Rapport genereren</button>
       </nav>
-      <span id="active-year-label" class="year-badge">—</span>
+      <div id="wi-filter-bar" class="wi-filter-bar hidden">
+        <button class="tog-btn wi-filter-btn selected" data-wi-filter="OB">OB</button>
+        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisA">WisA</button>
+        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisB">WisB</button>
+        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisC">WisC</button>
+        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisD">WisD</button>
+      </div>
+      <button id="subject-label" class="subject-badge hidden">—</button>
     </header>
 
     <main id="app">
+      <!-- Startup: subject picker -->
+      <section id="screen-startup" class="screen active"></section>
+
       <!-- Leerlingen -->
-      <section id="screen-leerlingen" class="screen active">
+      <section id="screen-leerlingen" class="screen">
         <div class="screen-header">
           <h2>Leerlingen</h2>
           <div class="header-actions">

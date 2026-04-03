@@ -1,4 +1,4 @@
-import { showModal, closeModal, toast, escHtml, SEL, overlayElement } from '../app.js';
+import { showModal, closeModal, toast, escHtml, SEL, overlayElement, getWiFilter } from '../app.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
 import { openGroupStudentsModal } from './leerlingen.js';
 
@@ -20,10 +20,27 @@ export function renderGroepen() {
   renderGroepenForYear(SEL.groupsYear.getValue());
 }
 
+const SUBCATEGORY_TO_FILTER = {
+  onderbouw: 'OB',
+  wisa: 'WisA',
+  wisb: 'WisB',
+  wisc: 'WisC',
+  wisd: 'WisD',
+};
+
 export function renderGroepenForYear(year) {
-  const groups = Store.getGroupsSync(year);
+  let groups = Store.getGroupsSync(year);
   const students = Store.getStudentsSync(year);
   const container = document.getElementById('group-list');
+
+  // Apply wi-filter when wiskunde is the active subject
+  if (Store.getActiveSubject() === 'wi') {
+    const wiFilter = getWiFilter();
+    groups = groups.filter((g) => {
+      const filterKey = SUBCATEGORY_TO_FILTER[g.subcategory ?? ''];
+      return filterKey ? wiFilter.has(filterKey) : true;
+    });
+  }
 
   groups.sort(
     (a, b) =>
@@ -59,8 +76,8 @@ export function renderGroepenForYear(year) {
           <p class="small">${escHtml(memberNames) || '—'}</p>
         </div>
         <div class="card-actions">
-          <button class="btn-sm" data-action="edit-group" data-id="${escHtml(g.id)}">Bewerken</button>
-          <button class="btn-sm btn-danger" data-action="del-group" data-id="${escHtml(g.id)}">Verwijderen</button>
+          <button class="btn-sm btn-sm-icon" data-action="edit-group" data-id="${escHtml(g.id)}" title="Groep bewerken">✎</button>
+          <button class="btn-sm btn-danger btn-sm-icon" data-action="del-group" data-id="${escHtml(g.id)}"${g.student_ids.length > 0 ? ' disabled title="Deze groep heeft leerlingen en kan dus niet worden verwijderd."' : ' title="Groep verwijderen"'}>🗑</button>
         </div>
       </div>`;
   }
@@ -85,6 +102,7 @@ export function renderGroepenForYear(year) {
 
 export async function openGroupModal(id) {
   const year = SEL.groupsYear.getValue() || Store.getConfigSync().activeYear;
+  const subject = Store.getActiveSubject();
   const students = await Store.getStudents(year);
   students.sort((a, b) => Store.fullName(a).localeCompare(Store.fullName(b)));
 
@@ -97,22 +115,10 @@ export async function openGroupModal(id) {
   showModal(
     `
     <h3>${id ? 'Groep bewerken' : 'Groep toevoegen'}</h3>
-    <div class="form-row">
-      <div class="form-group" style="flex:2">
-        <label>Naam (bijv. 6nat4)</label>
-        <input id="f-gname" type="text" value="${escHtml(group.name)}" />
-      </div>
-      <div class="form-group" style="flex:1.5">
-        <label>Jaarlaag</label>
-        <div class="btn-toggle-group">
-          ${[1, 2, 3, 4, 5, 6]
-            .map(
-              (n) =>
-                `<button class="tog-btn jl-btn${String(group.jaarlaag) === String(n) ? ' selected' : ''}" data-jl="${n}">${n}</button>`
-            )
-            .join('')}
-        </div>
-      </div>
+    <div class="form-group">
+      <label>Naam (bijv. 6nat4)</label>
+      <input id="f-gname" type="text" value="${escHtml(group.name)}" />
+      <span class="form-hint muted">Jaarlaag wordt afgeleid van het eerste cijfer in de naam.</span>
     </div>
     <div class="form-group">
       <label>Leerlingen</label>
@@ -134,27 +140,43 @@ export async function openGroupModal(id) {
     </div>
   `,
     (el) => {
-      // Jaarlaag toggle buttons
-      el.querySelectorAll('.jl-btn').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          el.querySelectorAll('.jl-btn').forEach((b) => b.classList.remove('selected'));
-          btn.classList.add('selected');
-        });
-      });
-
       el.querySelector('#f-g-save').addEventListener('click', async () => {
         const name = el.querySelector('#f-gname').value.trim();
-        const jlBtn = el.querySelector('.jl-btn.selected');
-        const jaarlaag = jlBtn ? jlBtn.dataset.jl : '';
-        const ids = [...el.querySelectorAll('#f-gstudents input:checked')].map((i) =>
-          Number(i.value)
-        );
         if (!name) {
           toast('Vul een naam in.', 'error');
           return;
         }
+
+        const parsed = Store.parseGroupName(name, subject);
+        if (!parsed.jaarlaag) {
+          toast(
+            'Kan de jaarlaag niet afleiden uit de naam. Begin de naam met een cijfer (bijv. 4nat1).',
+            'error'
+          );
+          return;
+        }
+        if (subject === 'wi' && !parsed.subcategory) {
+          toast(
+            'Kan de subcategorie niet afleiden uit de naam. Gebruik bijv. 4wisa1, 5wisb2 of 3wi1 voor onderbouw.',
+            'error'
+          );
+          return;
+        }
+
+        const ids = [...el.querySelectorAll('#f-gstudents input:checked')].map((i) =>
+          Number(i.value)
+        );
         const gid = id || Store.makeGroupId(name, year);
-        await Store.upsertGroup({ id: gid, name, jaarlaag, student_ids: ids }, year);
+        await Store.upsertGroup(
+          {
+            id: gid,
+            name,
+            jaarlaag: parsed.jaarlaag,
+            subcategory: parsed.subcategory ?? undefined,
+            student_ids: ids,
+          },
+          year
+        );
         closeModal();
         toast('Groep opgeslagen.', 'success');
         renderGroepen();
@@ -226,12 +248,17 @@ export async function openGroupCSVImport() {
       });
       el.querySelector('#f-csv-grp-import').addEventListener('click', async () => {
         if (!groupMap) return;
-        const toSave = Object.values(groupMap).map((g) => ({
-          id: Store.makeGroupId(g.name, year),
-          name: g.name,
-          jaarlaag: g.jaarlaag,
-          student_ids: g.student_ids,
-        }));
+        const subject = Store.getActiveSubject();
+        const toSave = Object.values(groupMap).map((g) => {
+          const parsed = Store.parseGroupName(g.name, subject);
+          return {
+            id: Store.makeGroupId(g.name, year),
+            name: g.name,
+            jaarlaag: parsed.jaarlaag ?? g.jaarlaag,
+            subcategory: parsed.subcategory ?? undefined,
+            student_ids: g.student_ids,
+          };
+        });
         await Store.upsertGroups(toSave, year);
         closeModal();
         toast(`${toSave.length} groepen geïmporteerd voor ${year}.`, 'success');

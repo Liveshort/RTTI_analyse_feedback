@@ -5,6 +5,7 @@
  */
 
 // ── Screen imports ────────────────────────────────────────────────────────────
+import { renderStartup } from './screens/startup.js';
 import { renderLeerlingen, renderStudentList, leerlingenState } from './screens/leerlingen.js';
 import { renderGroepen, renderGroepenForYear } from './screens/groepen.js';
 import { renderToetsen, renderToetsenList } from './screens/toetsen.js';
@@ -12,6 +13,7 @@ import { renderObservaties } from './screens/observaties.js';
 import { renderRapport } from './screens/rapport.js';
 
 // ── Navigation ────────────────────────────────────────────────────────────────
+const topbar = document.getElementById('topbar');
 const screens = {};
 document.querySelectorAll('.screen').forEach((el) => {
   screens[el.id.replace('screen-', '')] = el;
@@ -25,6 +27,11 @@ export function navigateTo(name) {
     .querySelectorAll('.nav-btn')
     .forEach((b) => b.classList.toggle('active', b.dataset.screen === name));
   Object.values(screens).forEach((s) => s.classList.remove('active'));
+  if (name === 'startup') {
+    topbar.classList.add('hidden');
+  } else {
+    topbar.classList.remove('hidden');
+  }
   if (screens[name]) {
     renderScreen(name); // render content while still hidden
     screens[name].classList.add('active'); // then reveal — no flash/reflow
@@ -34,6 +41,8 @@ export function navigateTo(name) {
 
 function renderScreen(name) {
   switch (name) {
+    case 'startup':
+      return renderStartup();
     case 'leerlingen':
       return renderLeerlingen();
     case 'groepen':
@@ -172,13 +181,56 @@ function initSelects() {
   });
 }
 
+// ── Wi-filter ─────────────────────────────────────────────────────────────────
+const wiFilterBar = document.getElementById('wi-filter-bar');
+let _wiFilter = new Set(['OB', 'WisA', 'WisB', 'WisC', 'WisD']);
+
+export function getWiFilter() {
+  return _wiFilter;
+}
+
+wiFilterBar.querySelectorAll('.wi-filter-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.wiFilter;
+    if (_wiFilter.has(key)) {
+      _wiFilter.delete(key);
+      btn.classList.remove('selected');
+    } else {
+      _wiFilter.add(key);
+      btn.classList.add('selected');
+    }
+    // Re-render whichever content screen is currently active
+    const active = document.querySelector('.screen.active');
+    if (active && active.id !== 'screen-startup') {
+      renderScreen(active.id.replace('screen-', ''));
+    }
+  });
+});
+
+// ── Subject badge ─────────────────────────────────────────────────────────────
+const subjectLabel = document.getElementById('subject-label');
+
+export function showSubjectBadge(subject) {
+  subjectLabel.textContent = Store.SUBJECT_DISPLAY[subject] ?? subject;
+  subjectLabel.classList.remove('hidden');
+  if (subject === 'wi') {
+    wiFilterBar.classList.remove('hidden');
+  } else {
+    wiFilterBar.classList.add('hidden');
+  }
+}
+
+subjectLabel.addEventListener('click', () => {
+  subjectLabel.classList.add('hidden');
+  wiFilterBar.classList.add('hidden');
+  navigateTo('startup');
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   await Store.preload();
   initSelects();
-  const cfg = Store.getConfigSync();
-  document.getElementById('active-year-label').textContent = cfg.activeYear;
-  navigateTo('leerlingen');
+  navigateTo('startup');
 }
 
 init();

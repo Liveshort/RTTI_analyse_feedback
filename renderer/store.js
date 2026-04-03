@@ -1,29 +1,31 @@
 /**
  * store.js — Central data access layer.
  *
- * NEW per-year file layout (one subfolder per academic year):
+ * Per-subject file layout:
  *
  *   data/
- *   ├── config.json                  { activeYear: "2025-2026" }
- *   └── 2025-2026/
- *       ├── students.json            [{ id, voornaam, tussenvoegsel, achternaam, stamklas, geslacht }]
- *       ├── groups.json              [{ id, name, jaarlaag, student_ids[] }]
- *       ├── exams.json               [{ id, title, jaarlaag, n_term, periode, volgnummer, structureMode, questions[] }]
+ *   ├── config.json                          { activeYear }
+ *   ├── observaties/
+ *   │   └── <obsId>.json                     { id, naam, icon, jaarlagen[], subject }
+ *   └── YYYY-YYYY/
+ *       ├── students-YYYY-YYYY.json          [{ id, voornaam, … }]
+ *       ├── exams/
+ *       │   └── <examId>.json                { id, subject, title, jaarlaag, … }
+ *       ├── groups/
+ *       │   └── <groupId>.json               { id, subject, name, jaarlaag, student_ids[] }
  *       └── scores/
- *           └── <studentId>.json     { student_id, scores: { examId: { qId: pts|null|string } } }
+ *           ├── nat/  bio/  schk/  wi/
+ *           │   └── <studentId>.json
  *
- * academic_year is no longer stored inside group/exam objects — it is implicit from the folder.
- * Students are flat per-year — no more schooljaren[] array.
- *
- * Migration: on first load, if legacy data/students.json exists it is automatically
- * migrated to the per-year layout and renamed to students.json.bak (etc.).
+ * Subject field inside each JSON file is authoritative (not derived from path).
  */
 
 const Store = (() => {
   // ── Cache ─────────────────────────────────────────────────────────────────
-  // Keys are relative paths: 'config.json', '2025-2026/students.json', etc.
+  // Exam/group/obs entries keyed as: `${year}/exams/${subject}`, `obs/${subject}`, etc.
   const cache = {};
-  let _years = null; // cached list of year folders
+  let _years = null;
+  let _activeSubject = null;
 
   async function load(relPath) {
     if (cache[relPath] !== undefined) return cache[relPath];
@@ -42,67 +44,144 @@ const Store = (() => {
     delete cache[relPath];
   }
 
+  // ── Active subject ─────────────────────────────────────────────────────────
+  function setActiveSubject(s) {
+    _activeSubject = s;
+  }
+  function getActiveSubject() {
+    return _activeSubject;
+  }
+
   // ── Path helpers ──────────────────────────────────────────────────────────
-  const yp = (year, file) => `${year}/${file}`;
-  const ypScore = (year, id) => `${year}/scores/${id}.json`;
+  const ypStudents = (year) => `${year}/students-${year}.json`;
+  const ypExam = (year, id) => `${year}/exams/${id}.json`;
+  const ypGroup = (year, id) => `${year}/groups/${id}.json`;
+  const ypObs = (id) => `observaties/${id}.json`;
+  const ypScore = (year, subj, id) => `${year}/scores/${subj}/${id}.json`;
+
+  // ── Subject helpers ────────────────────────────────────────────────────────
+  const SUBJECT_DISPLAY = {
+    nat: 'Natuurkunde',
+    bio: 'Biologie',
+    schk: 'Scheikunde',
+    wi: 'Wiskunde',
+  };
+
+  function subjectFromGroupName(name) {
+    const n = (name ?? '').toLowerCase();
+    if (/nat/.test(n)) return 'nat';
+    if (/biol/.test(n)) return 'bio';
+    if (/schk/.test(n)) return 'schk';
+    if (/wi/.test(n)) return 'wi';
+    return null;
+  }
+
+  /**
+   * Derive jaarlaag (and subcategory for wiskunde) from a group name.
+   * Returns { jaarlaag: string|null, subcategory: string|null }
+   * subcategory is only set when subject === 'wi'.
+   */
+  function parseGroupName(name, subject) {
+    const n = (name ?? '').toLowerCase();
+    const jlMatch = n.match(/^(\d+)/);
+    const jaarlaag = jlMatch ? jlMatch[1] : null;
+
+    let subcategory = null;
+    if (subject === 'wi') {
+      if (/wisd/.test(n)) subcategory = 'wisd';
+      else if (/wisc/.test(n)) subcategory = 'wisc';
+      else if (/wisb/.test(n)) subcategory = 'wisb';
+      else if (/wisa/.test(n)) subcategory = 'wisa';
+      else if (/awi/.test(n) || /bwi/.test(n)) {
+        // common patterns like 4awi, 5bwi — treat as wisa/wisb if detectable
+        subcategory = null;
+      }
+      if (!subcategory && jaarlaag && parseInt(jaarlaag, 10) <= 3) {
+        subcategory = 'onderbouw';
+      }
+    }
+
+    return { jaarlaag, subcategory };
+  }
 
   // ── Year management ───────────────────────────────────────────────────────
-
-  /** Refresh the in-memory years list from the filesystem. */
   async function refreshYears() {
     _years = await window.rtti.listYears();
     return _years;
   }
 
-  /** Returns the cached years list (newest first). Call after preload(). */
   function listYearsSync() {
     return _years ?? [];
   }
 
-  /**
-   * Ensure a year folder exists and its data is loaded into the cache.
-   * Safe to call multiple times — no-ops if already loaded.
-   */
-  async function loadYear(year) {
+  // ── Load functions (subject-scoped) ───────────────────────────────────────
+  async function loadExams(year, subject) {
+    const key = `${year}/exams/${subject}`;
+    if (cache[key] !== undefined) return cache[key];
+    const all = await window.rtti.readAllJson(`${year}/exams`);
+    cache[key] = all.filter((e) => e.subject === subject);
+    return cache[key];
+  }
+
+  async function loadGroups(year, subject) {
+    const key = `${year}/groups/${subject}`;
+    if (cache[key] !== undefined) return cache[key];
+    const all = await window.rtti.readAllJson(`${year}/groups`);
+    cache[key] = all.filter((g) => g.subject === subject);
+    return cache[key];
+  }
+
+  async function loadObservaties(subject) {
+    const key = `obs/${subject}`;
+    if (cache[key] !== undefined) return cache[key];
+    const all = await window.rtti.readAllJson('observaties');
+    cache[key] = all.filter((o) => o.subject === subject);
+    return cache[key];
+  }
+
+  async function loadYear(year, subject = _activeSubject) {
     await window.rtti.ensureYear(year);
-    await Promise.all([
-      load(yp(year, 'students.json')),
-      load(yp(year, 'groups.json')),
-      load(yp(year, 'exams.json')),
-    ]);
+    const tasks = [load(ypStudents(year))];
+    if (subject) {
+      tasks.push(loadExams(year, subject));
+      tasks.push(loadGroups(year, subject));
+    }
+    await Promise.all(tasks);
     if (_years && !_years.includes(year)) {
       _years.push(year);
       _years.sort((a, b) => b.localeCompare(a));
     }
   }
 
-  // ── Preload: warm cache for active year before first render ───────────────
+  // ── Preload: warm config + year list before startup screen ────────────────
   async function preload() {
-    await migrate(); // one-time migration (no-op if already done)
+    await migrate();
     _years = await window.rtti.listYears();
-    const cfg = await load('config.json');
-    const year = cfg?.activeYear ?? currentSchoolYear();
-    // Ensure active year folder exists even if it has no data yet
-    await loadYear(year);
-    await load('observaties.json'); // global, not year-scoped
-    // Refresh years after loadYear may have created a new folder
+    await load('config.json');
     _years = await window.rtti.listYears();
-    if (!_years.includes(year)) _years.unshift(year);
-    _years.sort((a, b) => b.localeCompare(a));
   }
 
-  // ── Sync getters (safe after preload / loadYear) ──────────────────────────
+  async function initSubject(subject) {
+    setActiveSubject(subject);
+    const year = getConfigSync().activeYear ?? currentSchoolYear();
+    await Promise.all([loadYear(year, subject), loadObservaties(subject)]);
+  }
+
+  // ── Sync getters (safe after preload / loadYear / initSubject) ────────────
   function getConfigSync() {
     return cache['config.json'] ?? { activeYear: currentSchoolYear() };
   }
   function getStudentsSync(year) {
-    return cache[yp(year, 'students.json')] ?? [];
+    return cache[ypStudents(year)] ?? [];
   }
-  function getGroupsSync(year) {
-    return cache[yp(year, 'groups.json')] ?? [];
+  function getGroupsSync(year, subject = _activeSubject) {
+    return cache[`${year}/groups/${subject}`] ?? [];
   }
-  function getExamsSync(year) {
-    return cache[yp(year, 'exams.json')] ?? [];
+  function getExamsSync(year, subject = _activeSubject) {
+    return cache[`${year}/exams/${subject}`] ?? [];
+  }
+  function getObservatiesSync(subject = _activeSubject) {
+    return cache[`obs/${subject}`] ?? [];
   }
 
   // ── Config ────────────────────────────────────────────────────────────────
@@ -123,7 +202,6 @@ const Store = (() => {
   }
 
   // ── Student helpers ───────────────────────────────────────────────────────
-
   function fullName(s) {
     if (s.voornaam || s.achternaam)
       return [s.voornaam, s.tussenvoegsel, s.achternaam].filter(Boolean).join(' ');
@@ -149,14 +227,13 @@ const Store = (() => {
   }
 
   // ── Students (year-scoped) ────────────────────────────────────────────────
-
   async function getStudents(year) {
-    return (await load(yp(year, 'students.json'))) ?? [];
+    return (await load(ypStudents(year))) ?? [];
   }
 
   async function saveStudents(list, year) {
     sortStudents(list);
-    await save(yp(year, 'students.json'), list);
+    await save(ypStudents(year), list);
   }
 
   async function upsertStudent(student, year) {
@@ -201,42 +278,36 @@ const Store = (() => {
     );
   }
 
-  // ── Groups (year-scoped) ──────────────────────────────────────────────────
-
-  async function getGroups(year) {
-    return (await load(yp(year, 'groups.json'))) ?? [];
-  }
-  async function saveGroups(list, year) {
-    await save(yp(year, 'groups.json'), list);
+  // ── Groups (year-scoped, subject-filtered) ────────────────────────────────
+  async function getGroups(year, subject = _activeSubject) {
+    return loadGroups(year, subject);
   }
 
   async function upsertGroup(group, year) {
-    const list = await getGroups(year);
-    const idx = list.findIndex((g) => g.id === group.id);
-    // Strip academic_year if caller passed it (legacy); it's implicit from folder
+    const subj = group.subject ?? subjectFromGroupName(group.name) ?? _activeSubject;
     const { academic_year: _ay, ...clean } = group;
-    if (idx >= 0) list[idx] = clean;
-    else list.push(clean);
-    await saveGroups(list, year);
+    const updated = { ...clean, subject: subj };
+    await window.rtti.writeJson(ypGroup(year, updated.id), updated);
+    const key = `${year}/groups/${subj}`;
+    const arr = cache[key] ?? [];
+    const i = arr.findIndex((g) => g.id === updated.id);
+    if (i >= 0) arr[i] = updated;
+    else arr.push(updated);
+    cache[key] = arr;
   }
 
   async function upsertGroups(groups, year) {
-    const list = await getGroups(year);
     for (const group of groups) {
-      const { academic_year: _ay, ...clean } = group;
-      const idx = list.findIndex((g) => g.id === clean.id);
-      if (idx >= 0) list[idx] = clean;
-      else list.push(clean);
+      await upsertGroup(group, year);
     }
-    await saveGroups(list, year);
   }
 
   async function deleteGroup(id, year) {
-    const list = await getGroups(year);
-    await saveGroups(
-      list.filter((g) => g.id !== id),
-      year
-    );
+    const group = getGroupsSync(year).find((g) => g.id === id);
+    if (!group) return;
+    await window.rtti.deleteFile(ypGroup(year, id));
+    const key = `${year}/groups/${group.subject ?? _activeSubject}`;
+    cache[key] = (cache[key] ?? []).filter((g) => g.id !== id);
   }
 
   function getGroupsByJaarlaag(year, jaarlaag) {
@@ -261,57 +332,56 @@ const Store = (() => {
     return getGroupsSync(year).find((g) => g.student_ids.includes(studentId)) ?? null;
   }
 
-  // ── Exams (year-scoped) ───────────────────────────────────────────────────
-
-  async function getExams(year) {
-    return (await load(yp(year, 'exams.json'))) ?? [];
-  }
-  async function saveExams(list, year) {
-    await save(yp(year, 'exams.json'), list);
+  // ── Exams (year-scoped, subject-filtered) ─────────────────────────────────
+  async function getExams(year, subject = _activeSubject) {
+    return loadExams(year, subject);
   }
 
   async function upsertExam(exam, year) {
-    const list = await getExams(year);
-    const idx = list.findIndex((e) => e.id === exam.id);
-    // Strip academic_year (now implicit from folder)
+    const subj = exam.subject ?? _activeSubject;
     const { academic_year: _ay, ...clean } = exam;
-
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], ...clean, volgnummer: list[idx].volgnummer };
+    const updated = { ...clean, subject: subj };
+    const key = `${year}/exams/${subj}`;
+    const arr = cache[key] ?? [];
+    const i = arr.findIndex((e) => e.id === updated.id);
+    if (i >= 0) {
+      updated.volgnummer = updated.volgnummer ?? arr[i].volgnummer;
+      arr[i] = { ...arr[i], ...updated };
     } else {
-      if (!clean.volgnummer) {
-        const jl = parseInt(clean.jaarlaag, 10);
+      if (!updated.volgnummer) {
+        const jl = parseInt(updated.jaarlaag, 10);
         if (!isNaN(jl)) {
-          const existing = list.filter(
-            (e) => String(e.jaarlaag) === String(clean.jaarlaag) && e.volgnummer
+          const existing = arr.filter(
+            (e) => String(e.jaarlaag) === String(updated.jaarlaag) && e.volgnummer
           );
           const maxSeq =
             existing.length > 0 ? Math.max(...existing.map((e) => e.volgnummer % 100)) : 0;
-          clean.volgnummer = jl * 100 + maxSeq + 1;
+          updated.volgnummer = jl * 100 + maxSeq + 1;
         }
       }
-      list.push(clean);
+      arr.push(updated);
     }
-    await saveExams(list, year);
+    cache[key] = arr;
+    await window.rtti.writeJson(ypExam(year, updated.id), updated);
   }
 
   async function deleteExam(id, year) {
-    const list = await getExams(year);
-    await saveExams(
-      list.filter((e) => e.id !== id),
-      year
-    );
+    const exam = getExamsSync(year).find((e) => e.id === id);
+    if (!exam) return;
+    if (examHasResits(id, year)) throw new Error('has_resits');
+    await window.rtti.deleteFile(ypExam(year, id));
+    const key = `${year}/exams/${exam.subject ?? _activeSubject}`;
+    cache[key] = (cache[key] ?? []).filter((e) => e.id !== id);
   }
 
-  // ── Scores (year-scoped) ──────────────────────────────────────────────────
-
-  async function getStudentScores(studentId, year) {
-    const file = ypScore(year, studentId);
+  // ── Scores (year-scoped, subject-scoped) ──────────────────────────────────
+  async function getStudentScores(studentId, year, subject = _activeSubject) {
+    const file = ypScore(year, subject, studentId);
     return (await load(file)) ?? { student_id: studentId, scores: {} };
   }
 
-  async function saveStudentScores(record, year) {
-    const file = ypScore(year, record.student_id);
+  async function saveStudentScores(record, year, subject = _activeSubject) {
+    const file = ypScore(year, subject, record.student_id);
     invalidate(file);
     await save(file, record);
   }
@@ -324,17 +394,13 @@ const Store = (() => {
     await saveStudentScores(record, year);
   }
 
-  /**
-   * Load history for a student across ALL years (for profile chart).
-   * Lazily loads each year's exam list if not already cached.
-   */
-  async function getStudentHistory(studentId) {
+  async function getStudentHistory(studentId, subject = _activeSubject) {
     const years = listYearsSync();
     const results = [];
     for (const year of years) {
-      await loadYear(year); // no-op if already cached
-      const exams = getExamsSync(year);
-      const record = await getStudentScores(studentId, year);
+      await loadYear(year, subject);
+      const exams = getExamsSync(year, subject);
+      const record = await getStudentScores(studentId, year, subject);
       for (const [examId, questionScores] of Object.entries(record.scores ?? {})) {
         const exam = exams.find((e) => e.id === examId);
         if (!exam) continue;
@@ -349,7 +415,6 @@ const Store = (() => {
   }
 
   // ── RTTI calculations ─────────────────────────────────────────────────────
-
   function calcResults(exam, questionScores) {
     const n = exam.n_term ?? 1;
     const examMaxTotal = exam.questions.reduce((s, q) => s + q.max_points, 0);
@@ -396,16 +461,14 @@ const Store = (() => {
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────────
-  function makeExamId(title, year) {
-    return (
-      title
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '') +
-      '-' +
-      year.replace(/\//g, '-')
-    );
+  function makeExamId(title, year, subject = _activeSubject) {
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+    return `${subject}-${slug}-${year.replace(/\//g, '-')}`;
   }
+
   function makeGroupId(name, year) {
     return (
       name
@@ -417,37 +480,78 @@ const Store = (() => {
     );
   }
 
-  // ── One-time migration from legacy flat layout ────────────────────────────
+  // ── Observaties (subject-scoped, individual files) ────────────────────────
+  async function getObservaties(subject = _activeSubject) {
+    return loadObservaties(subject);
+  }
+
+  async function upsertObservation(obs, subject = _activeSubject) {
+    const updated = { ...obs, subject };
+    await window.rtti.writeJson(ypObs(updated.id), updated);
+    const key = `obs/${subject}`;
+    const arr = cache[key] ?? [];
+    const i = arr.findIndex((o) => o.id === updated.id);
+    if (i >= 0) arr[i] = updated;
+    else arr.push(updated);
+    cache[key] = arr;
+  }
+
+  async function deleteObservation(id, subject = _activeSubject) {
+    await window.rtti.deleteFile(ypObs(id));
+    const key = `obs/${subject}`;
+    cache[key] = (cache[key] ?? []).filter((o) => o.id !== id);
+  }
+
+  async function setObservation(studentId, examId, obsId, checked, year) {
+    const rec = await getStudentScores(studentId, year);
+    if (!rec.observations) rec.observations = {};
+    if (!rec.observations[examId]) rec.observations[examId] = [];
+    if (checked) {
+      if (!rec.observations[examId].includes(obsId)) rec.observations[examId].push(obsId);
+    } else {
+      rec.observations[examId] = rec.observations[examId].filter((id) => id !== obsId);
+      if (rec.observations[examId].length === 0) delete rec.observations[examId];
+    }
+    await saveStudentScores(rec, year);
+  }
+
+  async function preloadScores(year, subject = _activeSubject) {
+    const students = getStudentsSync(year);
+    await Promise.all(students.map((s) => getStudentScores(s.id, year, subject)));
+  }
+
+  // ── Migration ─────────────────────────────────────────────────────────────
   async function migrate() {
+    await migrateLegacyToPerYear();
+    await migrateToPerSubject();
+  }
+
+  // Phase 1: very old flat root layout → per-year layout
+  async function migrateLegacyToPerYear() {
     const oldStudents = await window.rtti.readJson('students.json');
-    if (!oldStudents) return; // already migrated or fresh install
+    if (!oldStudents) return;
 
     console.log('[store] Migrating legacy data to per-year layout…');
 
     const oldGroups = (await window.rtti.readJson('groups.json')) ?? [];
     const oldExams = (await window.rtti.readJson('exams.json')) ?? [];
 
-    // Build examId → year lookup
     const examYear = {};
     for (const e of oldExams) if (e.academic_year) examYear[e.id] = e.academic_year;
 
-    // Collect all years involved
     const yearSet = new Set();
     for (const s of oldStudents)
       (s.schooljaren ?? []).forEach((e) => e.year && yearSet.add(e.year));
     for (const g of oldGroups) if (g.academic_year) yearSet.add(g.academic_year);
     for (const e of oldExams) if (e.academic_year) yearSet.add(e.academic_year);
-    // Add legacy-only students to their guessed year (we'll skip — they have no year info)
 
     for (const year of yearSet) {
       await window.rtti.ensureYear(year);
 
-      // Students for this year (flat, stamklas/geslacht resolved)
       const yearStudents = [];
       for (const s of oldStudents) {
         const entry = (s.schooljaren ?? []).find((e) => e.year === year);
         if (!entry) {
-          // Legacy flat student — add to year only if they have stamklas/geslacht
           if (!s.schooljaren?.length && (s.stamklas || s.geslacht)) {
             yearStudents.push({
               id: s.id,
@@ -471,29 +575,23 @@ const Store = (() => {
       }
       if (yearStudents.length) {
         sortStudents(yearStudents);
-        await window.rtti.writeJson(yp(year, 'students.json'), yearStudents);
+        await window.rtti.writeJson(`${year}/students.json`, yearStudents);
       }
 
-      // Groups for this year (strip academic_year field)
       const yearGroups = oldGroups
         .filter((g) => g.academic_year === year)
         .map(({ academic_year: _ay, ...g }) => g);
-      if (yearGroups.length) await window.rtti.writeJson(yp(year, 'groups.json'), yearGroups);
+      if (yearGroups.length) await window.rtti.writeJson(`${year}/groups.json`, yearGroups);
 
-      // Exams for this year (strip academic_year field)
       const yearExams = oldExams
         .filter((e) => e.academic_year === year)
         .map(({ academic_year: _ay, ...e }) => e);
-      if (yearExams.length) await window.rtti.writeJson(yp(year, 'exams.json'), yearExams);
+      if (yearExams.length) await window.rtti.writeJson(`${year}/exams.json`, yearExams);
     }
 
-    // Scores: distribute each student's scores to the correct year folders
-    const scoreIds = (await window.rtti.listScoreFiles_legacy?.()) ?? [];
-    // Use direct readJson to get all old score files
     for (const s of oldStudents) {
       const rec = await window.rtti.readJson(`scores/${s.id}.json`);
       if (!rec?.scores) continue;
-      // Group scores by year
       const byYear = {};
       for (const [examId, qs] of Object.entries(rec.scores)) {
         const year = examYear[examId];
@@ -503,55 +601,240 @@ const Store = (() => {
       }
       for (const [year, scores] of Object.entries(byYear)) {
         if (!yearSet.has(year)) continue;
-        await window.rtti.writeJson(ypScore(year, s.id), { student_id: s.id, scores });
+        await window.rtti.writeJson(`${year}/scores/${s.id}.json`, { student_id: s.id, scores });
       }
     }
 
-    // Rename old files to .bak so this migration doesn't re-run
     await window.rtti.writeJson('students.json.bak', oldStudents);
     if (oldGroups.length) await window.rtti.writeJson('groups.json.bak', oldGroups);
     if (oldExams.length) await window.rtti.writeJson('exams.json.bak', oldExams);
-    // Overwrite root files with null-sentinel so we know migration is done
     await window.rtti.writeJson('students.json', null);
 
-    console.log('[store] Migration complete.');
+    console.log('[store] Legacy migration complete.');
   }
 
-  // ── Observaties (global, not year-scoped) ─────────────────────────────────
+  // Phase 2: per-year array layout → per-subject individual files
+  async function migrateToPerSubject() {
+    const years = (await window.rtti.listYears()) ?? [];
+    let needsMigration = false;
 
-  function getObservatiesSync() {
-    return cache['observaties.json'] ?? [];
-  }
-  async function getObservaties() {
-    return (await load('observaties.json')) ?? [];
-  }
-  async function saveObservaties(list) {
-    cache['observaties.json'] = list;
-    await save('observaties.json', list);
-  }
+    const obsRaw = await window.rtti.readJson('observaties.json');
+    if (Array.isArray(obsRaw)) needsMigration = true;
 
-  async function setObservation(studentId, examId, obsId, checked, year) {
-    const rec = await getStudentScores(studentId, year);
-    if (!rec.observations) rec.observations = {};
-    if (!rec.observations[examId]) rec.observations[examId] = [];
-    if (checked) {
-      if (!rec.observations[examId].includes(obsId)) rec.observations[examId].push(obsId);
-    } else {
-      rec.observations[examId] = rec.observations[examId].filter((id) => id !== obsId);
-      if (rec.observations[examId].length === 0) delete rec.observations[examId];
+    if (!needsMigration) {
+      for (const year of years) {
+        const examsRaw = await window.rtti.readJson(`${year}/exams.json`);
+        if (Array.isArray(examsRaw)) {
+          needsMigration = true;
+          break;
+        }
+      }
     }
-    await saveStudentScores(rec, year);
+
+    if (!needsMigration) return;
+
+    console.log('[store] Migrating to per-subject individual files…');
+
+    // Migrate observaties.json → observaties/<id>.json
+    if (Array.isArray(obsRaw)) {
+      await window.rtti.ensureDir('observaties');
+      for (const obs of obsRaw) {
+        await window.rtti.writeJson(ypObs(obs.id), { ...obs, subject: obs.subject ?? 'nat' });
+      }
+      await window.rtti.writeJson('observaties.json.bak', obsRaw);
+      await window.rtti.writeJson('observaties.json', null);
+    }
+
+    for (const year of years) {
+      // Migrate exams.json → exams/<id>.json
+      const examsRaw = await window.rtti.readJson(`${year}/exams.json`);
+      if (Array.isArray(examsRaw)) {
+        await window.rtti.ensureDir(`${year}/exams`);
+        for (const exam of examsRaw) {
+          await window.rtti.writeJson(ypExam(year, exam.id), {
+            ...exam,
+            subject: exam.subject ?? 'nat',
+          });
+        }
+        await window.rtti.writeJson(`${year}/exams.json.bak`, examsRaw);
+        await window.rtti.writeJson(`${year}/exams.json`, null);
+      }
+
+      // Migrate groups.json → groups/<id>.json
+      const groupsRaw = await window.rtti.readJson(`${year}/groups.json`);
+      if (Array.isArray(groupsRaw)) {
+        await window.rtti.ensureDir(`${year}/groups`);
+        for (const group of groupsRaw) {
+          const subj = subjectFromGroupName(group.name) ?? 'nat';
+          await window.rtti.writeJson(ypGroup(year, group.id), { ...group, subject: subj });
+        }
+        await window.rtti.writeJson(`${year}/groups.json.bak`, groupsRaw);
+        await window.rtti.writeJson(`${year}/groups.json`, null);
+      }
+
+      // Migrate students.json → students-<year>.json
+      const studentsRaw = await window.rtti.readJson(`${year}/students.json`);
+      if (Array.isArray(studentsRaw)) {
+        await window.rtti.writeJson(ypStudents(year), studentsRaw);
+        await window.rtti.writeJson(`${year}/students.json.bak`, studentsRaw);
+        await window.rtti.writeJson(`${year}/students.json`, null);
+      }
+
+      // Migrate scores/<studentId>.json → scores/nat/<studentId>.json
+      const oldScoreRecs = await window.rtti.readAllJson(`${year}/scores`);
+      for (const rec of oldScoreRecs) {
+        if (!rec?.student_id) continue;
+        await window.rtti.writeJson(ypScore(year, 'nat', rec.student_id), rec);
+        await window.rtti.deleteFile(`${year}/scores/${rec.student_id}.json`);
+      }
+    }
+
+    console.log('[store] Per-subject migration complete.');
   }
 
-  /** Fire-and-forget: warm the score cache for every student in a year. */
-  async function preloadScores(year) {
+  async function examHasScores(examId, year, subject = _activeSubject) {
     const students = getStudentsSync(year);
-    await Promise.all(students.map((s) => getStudentScores(s.id, year)));
+    for (const s of students) {
+      const rec = await getStudentScores(s.id, year, subject);
+      const exScores = rec?.scores?.[examId];
+      if (!exScores) continue;
+      if (Object.values(exScores).some((v) => v !== null && v !== undefined)) return true;
+    }
+    return false;
+  }
+
+  async function studentHasScores(studentId, year, subject = _activeSubject) {
+    const rec = await getStudentScores(studentId, year, subject);
+    return Object.values(rec.scores ?? {}).some((exScores) =>
+      Object.values(exScores ?? {}).some((v) => v !== null && v !== undefined)
+    );
+  }
+
+  function obsIsUsedInAnyExam(obsId) {
+    return Object.entries(cache).some(
+      ([key, val]) =>
+        key.includes('/exams/') &&
+        Array.isArray(val) &&
+        val.some((e) => (e.obs_ids ?? []).includes(obsId))
+    );
+  }
+
+  // ── Resit helpers ─────────────────────────────────────────────────────────
+  function getResitsSync(parentId, year, subject = _activeSubject) {
+    return getExamsSync(year, subject)
+      .filter((e) => e.parent_id === parentId)
+      .sort((a, b) => (a.attempt ?? 1) - (b.attempt ?? 1));
+  }
+
+  function examHasResits(examId, year, subject = _activeSubject) {
+    return getExamsSync(year, subject).some((e) => e.parent_id === examId);
+  }
+
+  async function computeBestGradeMap(parentId, year, subject = _activeSubject) {
+    const parentExam = getExamsSync(year, subject).find((e) => e.id === parentId);
+    if (!parentExam) return {};
+    const allAttempts = [parentExam, ...getResitsSync(parentId, year, subject)];
+    const students = getStudentsSync(year);
+    const bestMap = {};
+    for (const s of students) {
+      const rec = await getStudentScores(s.id, year, subject);
+      let bestGrade = -Infinity;
+      let bestEntry = null;
+      for (const attempt of allAttempts) {
+        const examScores = rec?.scores?.[attempt.id];
+        if (!examScores || Object.keys(examScores).length === 0) continue;
+        const qs = {};
+        attempt.questions.forEach((q) => {
+          const v = examScores[q.id];
+          if (v !== undefined) qs[q.id] = v;
+        });
+        if (Object.keys(qs).length === 0) continue;
+        const res = calcResults(attempt, qs);
+        if (res.grade !== null && res.grade > bestGrade) {
+          bestGrade = res.grade;
+          bestEntry = { examId: attempt.id, exam: attempt, questionScores: qs, grade: res.grade };
+        }
+      }
+      if (bestEntry) bestMap[s.id] = bestEntry;
+    }
+    return bestMap;
+  }
+
+  /**
+   * Given a flat history array (from getStudentHistory), collapses resit groups
+   * so that only the attempt with the highest grade appears per exam group.
+   * Standalone exams (no parent_id, no resits in history) pass through unchanged.
+   */
+  function resolveBestAttempts(history) {
+    const parentsWithResits = new Set(
+      history.filter((h) => h.exam.parent_id).map((h) => h.exam.parent_id)
+    );
+    const handledParents = new Set();
+    const result = [];
+
+    // Process originals (no parent_id) first
+    for (const entry of history) {
+      if (entry.exam.parent_id) continue;
+      const examId = entry.exam.id;
+      if (!parentsWithResits.has(examId)) {
+        result.push(entry); // standalone — pass through
+        continue;
+      }
+      handledParents.add(examId);
+      const candidates = [entry, ...history.filter((h) => h.exam.parent_id === examId)];
+      let best = candidates[0];
+      for (const c of candidates) {
+        if (
+          (calcResults(c.exam, c.questionScores).grade ?? -1) >
+          (calcResults(best.exam, best.questionScores).grade ?? -1)
+        )
+          best = c;
+      }
+      result.push(best);
+    }
+
+    // Handle resits whose parent has no history entry (student only did the resit)
+    for (const entry of history) {
+      if (!entry.exam.parent_id) continue;
+      const parentId = entry.exam.parent_id;
+      if (handledParents.has(parentId)) continue;
+      handledParents.add(parentId);
+      const resitGroup = history.filter((h) => h.exam.parent_id === parentId);
+      let best = resitGroup[0];
+      for (const c of resitGroup) {
+        if (
+          (calcResults(c.exam, c.questionScores).grade ?? -1) >
+          (calcResults(best.exam, best.questionScores).grade ?? -1)
+        )
+          best = c;
+      }
+      result.push(best);
+    }
+
+    result.sort((a, b) => {
+      const ycmp = (a.exam.academic_year ?? '').localeCompare(b.exam.academic_year ?? '');
+      return ycmp !== 0 ? ycmp : (a.exam.volgnummer ?? 0) - (b.exam.volgnummer ?? 0);
+    });
+    return result;
+  }
+
+  async function removeObsFromExamScores(obsId, examId, year, subject = _activeSubject) {
+    const students = getStudentsSync(year);
+    await Promise.all(
+      students.map(async (s) => {
+        const rec = await getStudentScores(s.id, year, subject);
+        const arr = rec.observations?.[examId];
+        if (!arr || !arr.includes(obsId)) return;
+        rec.observations[examId] = arr.filter((id) => id !== obsId);
+        await saveStudentScores(rec, year, subject);
+      })
+    );
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
   return {
     preload,
+    initSubject,
     loadYear,
     preloadScores,
     listYearsSync,
@@ -559,6 +842,12 @@ const Store = (() => {
     getStudentsSync,
     getGroupsSync,
     getExamsSync,
+    getObservatiesSync,
+    getActiveSubject,
+    setActiveSubject,
+    SUBJECT_DISPLAY,
+    subjectFromGroupName,
+    parseGroupName,
     getConfig,
     setActiveYear,
     currentSchoolYear,
@@ -571,7 +860,6 @@ const Store = (() => {
     upsertStudents,
     deleteStudent,
     getGroups,
-    saveGroups,
     upsertGroup,
     upsertGroups,
     deleteGroup,
@@ -580,7 +868,6 @@ const Store = (() => {
     getJaarlagen,
     getStudentGroup,
     getExams,
-    saveExams,
     upsertExam,
     deleteExam,
     getStudentScores,
@@ -591,9 +878,17 @@ const Store = (() => {
     calcGrade,
     makeExamId,
     makeGroupId,
-    getObservatiesSync,
     getObservaties,
-    saveObservaties,
+    upsertObservation,
+    deleteObservation,
     setObservation,
+    examHasScores,
+    studentHasScores,
+    obsIsUsedInAnyExam,
+    removeObsFromExamScores,
+    getResitsSync,
+    examHasResits,
+    computeBestGradeMap,
+    resolveBestAttempts,
   };
 })();

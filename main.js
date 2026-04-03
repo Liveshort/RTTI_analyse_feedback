@@ -29,7 +29,9 @@ function acquireLock(filePath) {
 }
 
 function releaseLock(filePath) {
-  try { fs.unlinkSync(filePath + '.lock'); } catch (_) {}
+  try {
+    fs.unlinkSync(filePath + '.lock');
+  } catch (_) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +55,7 @@ ipcMain.handle('fs:readJson', (_event, relPath) => {
 // Score files (inside a 'scores' folder) skip locking; everything else is locked.
 ipcMain.handle('fs:writeJson', (_event, relPath, data) => {
   const filePath = path.join(getDataDir(), relPath);
-  const isScore  = relPath.includes('/scores/');
+  const isScore = relPath.includes('/scores/');
 
   if (isScore) {
     try {
@@ -83,29 +85,86 @@ ipcMain.handle('fs:listYears', () => {
   const dataDir = getDataDir();
   const YEAR_RE = /^\d{4}-\d{4}$/;
   try {
-    return fs.readdirSync(dataDir)
-      .filter(name => {
+    return fs
+      .readdirSync(dataDir)
+      .filter((name) => {
         if (!YEAR_RE.test(name)) return false;
         return fs.statSync(path.join(dataDir, name)).isDirectory();
       })
       .sort((a, b) => b.localeCompare(a));
-  } catch (_) { return []; }
+  } catch (_) {
+    return [];
+  }
 });
 
-// Ensure a year folder (and its scores subfolder) exist.
+// Ensure a year folder and all required subfolders exist.
+const SUBJECTS = ['nat', 'bio', 'schk', 'wi'];
 ipcMain.handle('fs:ensureYear', (_event, year) => {
   const yearDir = path.join(getDataDir(), year);
-  fs.mkdirSync(path.join(yearDir, 'scores'), { recursive: true });
+  fs.mkdirSync(path.join(yearDir, 'exams'), { recursive: true });
+  fs.mkdirSync(path.join(yearDir, 'groups'), { recursive: true });
+  for (const subj of SUBJECTS) {
+    fs.mkdirSync(path.join(yearDir, 'scores', subj), { recursive: true });
+  }
   return yearDir;
 });
 
-// List student IDs that have a score file for a given year.
-ipcMain.handle('fs:listScoreFiles', (_event, year) => {
-  const scoresDir = path.join(getDataDir(), year, 'scores');
+// List student IDs that have a score file for a given year + subject.
+ipcMain.handle('fs:listScoreFiles', (_event, year, subject) => {
+  const scoresDir = path.join(getDataDir(), year, 'scores', subject);
   if (!fs.existsSync(scoresDir)) return [];
-  return fs.readdirSync(scoresDir)
-    .filter(f => f.endsWith('.json'))
-    .map(f => f.replace('.json', ''));
+  return fs
+    .readdirSync(scoresDir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => f.replace('.json', ''));
+});
+
+// Read all .json files directly in a directory (non-recursive); skips nulls and parse errors.
+ipcMain.handle('fs:readAllJson', (_event, dirRelPath) => {
+  const dir = path.join(getDataDir(), dirRelPath);
+  if (!fs.existsSync(dir)) return [];
+  const results = [];
+  for (const entry of fs.readdirSync(dir)) {
+    if (!entry.endsWith('.json')) continue;
+    const entryPath = path.join(dir, entry);
+    if (fs.statSync(entryPath).isDirectory()) continue;
+    try {
+      const data = JSON.parse(fs.readFileSync(entryPath, 'utf8'));
+      if (data !== null && data !== undefined) results.push(data);
+    } catch (_) {}
+  }
+  return results;
+});
+
+// Delete a single file relative to the data directory.
+// Score files skip locking; all other files acquire lock first.
+ipcMain.handle('fs:deleteFile', (_event, relPath) => {
+  const filePath = path.join(getDataDir(), relPath);
+  const isScore = relPath.includes('/scores/');
+  if (isScore) {
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: e.message };
+    }
+  } else {
+    const acquired = acquireLock(filePath);
+    if (!acquired) return { ok: false, reason: 'locked' };
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: e.message };
+    } finally {
+      releaseLock(filePath);
+    }
+  }
+});
+
+// Ensure a directory exists (recursive mkdir).
+ipcMain.handle('fs:ensureDir', (_event, relPath) => {
+  fs.mkdirSync(path.join(getDataDir(), relPath), { recursive: true });
 });
 
 // Absolute path of data dir (for display/debugging).
@@ -116,13 +175,16 @@ ipcMain.handle('fs:getDataDir', () => getDataDir());
 // ---------------------------------------------------------------------------
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1280, height: 800, minWidth: 900, minHeight: 600,
+    width: 1280,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
-    title: 'RTTI App',
+    title: 'Maatwerk',
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   if (!app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
@@ -130,6 +192,10 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
 });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});

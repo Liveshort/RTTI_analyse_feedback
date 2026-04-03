@@ -43,8 +43,8 @@ export function renderObservaties() {
         <span class="small">Jaarlagen: ${(o.jaarlagen ?? []).join(', ') || '—'}</span>
       </div>
       <div class="card-actions">
-        <button class="btn-sm" data-action="edit-obs" data-id="${escHtml(o.id)}">Bewerken</button>
-        <button class="btn-sm btn-danger" data-action="del-obs" data-id="${escHtml(o.id)}">Verwijderen</button>
+        <button class="btn-sm btn-sm-icon" data-action="edit-obs" data-id="${escHtml(o.id)}" title="Observatie bewerken">✎</button>
+        <button class="btn-sm btn-danger btn-sm-icon" data-action="del-obs" data-id="${escHtml(o.id)}"${Store.obsIsUsedInAnyExam(o.id) ? ' disabled title="Deze observatie is gekoppeld aan een toets en kan dus niet worden verwijderd."' : ' title="Observatie verwijderen"'}>🗑</button>
       </div>
     </div>`
     )
@@ -60,8 +60,7 @@ export function renderObservaties() {
 
 export async function deleteObs(id) {
   if (!confirm('Observatie verwijderen?')) return;
-  const list = Store.getObservatiesSync().filter((o) => o.id !== id);
-  await Store.saveObservaties(list);
+  await Store.deleteObservation(id);
   toast('Observatie verwijderd.', 'info');
   renderObservaties();
 }
@@ -71,6 +70,7 @@ export async function openObsModal(existingId) {
   const obs = existingId
     ? JSON.parse(JSON.stringify(allObs.find((o) => o.id === existingId) ?? {}))
     : {
+        subject: Store.getActiveSubject(),
         id: 'obs-' + Date.now(),
         naam: '',
         icon: OBS_PRESET_ICONS[0].icon,
@@ -157,10 +157,7 @@ export async function openObsModal(existingId) {
           return;
         }
         const updated = { ...obs, naam, icon: selectedIcon, uitleg, jaarlagen };
-        const list = isEdit
-          ? allObs.map((o) => (o.id === existingId ? updated : o))
-          : [...allObs, updated];
-        await Store.saveObservaties(list);
+        await Store.upsertObservation(updated);
         closeModal();
         toast('Observatie opgeslagen.', 'success');
         renderObservaties();
