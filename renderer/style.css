@@ -776,6 +776,63 @@ body {
   border-bottom: none;
 }
 
+/* ── Group-students assignment table ──────────────────────────────────────── */
+.gst-label-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.gst-label-row label {
+  margin-bottom: 0;
+}
+.gst-scroll {
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.gst-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.gst-table th {
+  background: var(--bg);
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+}
+.gst-group-th {
+  text-align: center !important;
+  min-width: 72px;
+}
+.gst-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+.gst-table tr:last-child td {
+  border-bottom: none;
+}
+.gst-table tbody tr:hover td {
+  background: var(--bg);
+}
+.gst-stamklas {
+  white-space: nowrap;
+  color: var(--muted);
+}
+.gst-check-td {
+  text-align: center;
+}
+
 /* ── Modal ────────────────────────────────────────────────────────────────── */
 #modal-overlay {
   position: fixed;

@@ -104,44 +104,135 @@ export async function openGroupModal(id) {
   const year = SEL.groupsYear.getValue() || Store.getConfigSync().activeYear;
   const subject = Store.getActiveSubject();
   const students = await Store.getStudents(year);
-  students.sort((a, b) => Store.fullName(a).localeCompare(Store.fullName(b)));
+  students.sort((a, b) => {
+    const scmp = (a.stamklas ?? '').localeCompare(b.stamklas ?? '');
+    if (scmp !== 0) return scmp;
+    return (a.achternaam ?? '').localeCompare(b.achternaam ?? '');
+  });
 
   let group = { id: '', name: '', jaarlaag: '', student_ids: [] };
+  let groupsInJaarlaag = [];
+
   if (id) {
     const all = await Store.getGroups(year);
     group = JSON.parse(JSON.stringify(all.find((g) => g.id === id) ?? group));
+    groupsInJaarlaag = Store.getGroupsSync(year)
+      .filter((g) => String(g.jaarlaag) === String(group.jaarlaag))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  const hasStudents = group.student_ids.length > 0;
+  const isEdit = !!id;
+
+  let studentsSection;
+  if (isEdit) {
+    const headerCols = groupsInJaarlaag
+      .map((g) => `<th class="gst-group-th">${escHtml(g.name)}</th>`)
+      .join('');
+    const rows = students
+      .map((s) => {
+        const jl = Store.jaarlaagFromStamklas(s.stamklas);
+        const cols = groupsInJaarlaag
+          .map((g) => {
+            const checked = g.student_ids.includes(s.id) ? 'checked' : '';
+            return `<td class="gst-check-td"><input type="checkbox"
+              data-student-id="${s.id}"
+              data-group-id="${escHtml(g.id)}"
+              data-subcategory="${escHtml(g.subcategory ?? '')}"
+              ${checked} /></td>`;
+          })
+          .join('');
+        return `<tr data-student-id="${s.id}" data-stamklas-jl="${escHtml(jl)}">
+          <td>${escHtml(Store.fullName(s))}</td>
+          <td class="gst-stamklas">${escHtml(s.stamklas ?? '')}</td>
+          ${cols}
+        </tr>`;
+      })
+      .join('');
+
+    studentsSection = `
+      <div class="gst-label-row">
+        <label>Leerlingen</label>
+        ${group.jaarlaag ? `<button type="button" id="f-g-jl-filter" class="btn-sm btn-primary" data-active="1">Alleen leerlingen van jaarlaag ${escHtml(String(group.jaarlaag))} tonen</button>` : ''}
+      </div>
+      <div class="gst-scroll">
+        <table class="gst-table">
+          <thead>
+            <tr>
+              <th>Naam</th>
+              <th>Stamklas</th>
+              ${headerCols}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
   }
 
   showModal(
     `
     <h3>${id ? 'Groep bewerken' : 'Groep toevoegen'}</h3>
     <div class="form-group">
-      <label>Naam (bijv. 6nat4)</label>
-      <input id="f-gname" type="text" value="${escHtml(group.name)}" />
-      <span class="form-hint muted">Jaarlaag wordt afgeleid van het eerste cijfer in de naam.</span>
+      <label>Naam (bijv. 6nat4 of 2anat)</label>
+      <input id="f-gname" type="text" value="${escHtml(group.name)}" ${hasStudents ? 'disabled' : ''} />
+      <span class="form-hint muted">${
+        hasStudents
+          ? 'Naam kan niet worden gewijzigd zolang er leerlingen in de groep zitten.'
+          : isEdit
+            ? 'Jaarlaag wordt afgeleid van het eerste cijfer in de naam.'
+            : 'Jaarlaag wordt afgeleid van het eerste cijfer in de naam. Leerlingen kunnen worden toegevoegd nadat de groep is aangemaakt.'
+      }</span>
     </div>
-    <div class="form-group">
-      <label>Leerlingen</label>
-      <div class="checkbox-list" id="f-gstudents">
-        ${students
-          .map(
-            (s) => `
-          <label class="checkbox-item">
-            <input type="checkbox" value="${s.id}" ${group.student_ids.includes(s.id) ? 'checked' : ''} />
-            ${escHtml(Store.fullName(s))} <span class="muted">(${s.id})</span>
-          </label>`
-          )
-          .join('')}
-      </div>
-    </div>
+    ${isEdit ? `<div class="form-group">${studentsSection}</div>` : ''}
     <div class="form-actions">
       <button class="btn-primary" id="f-g-save">Opslaan</button>
       <button class="btn-secondary" data-close-modal="1">Annuleren</button>
     </div>
   `,
     (el) => {
+      // Filter button: toggle showing only students from this group's jaarlaag
+      const filterBtn = el.querySelector('#f-g-jl-filter');
+      const applyFilter = (active) => {
+        el.querySelectorAll('tbody tr').forEach((row) => {
+          row.style.display =
+            !active || row.dataset.stamklasJl === String(group.jaarlaag) ? '' : 'none';
+        });
+      };
+      if (filterBtn) {
+        // Apply filter immediately on open
+        applyFilter(true);
+        filterBtn.addEventListener('click', () => {
+          const isActive = filterBtn.dataset.active === '1';
+          filterBtn.dataset.active = isActive ? '0' : '1';
+          filterBtn.classList.toggle('btn-primary', !isActive);
+          filterBtn.classList.toggle('btn-secondary', isActive);
+          applyFilter(!isActive);
+        });
+      }
+
+      // Conflict resolution: checking a box may uncheck others for the same student
+      if (isEdit) {
+        el.querySelector('tbody').addEventListener('change', (e) => {
+          if (e.target.type !== 'checkbox' || !e.target.checked) return;
+          const sid = e.target.dataset.studentId;
+          const sub = e.target.dataset.subcategory;
+          el.querySelectorAll(`tbody input[type="checkbox"][data-student-id="${sid}"]`).forEach(
+            (cb) => {
+              if (cb === e.target) return;
+              if (subject === 'wi') {
+                // Wiskunde: only conflict within the same non-empty subcategory
+                if (sub && cb.dataset.subcategory === sub) cb.checked = false;
+              } else {
+                // Other subjects: student can only be in one group
+                cb.checked = false;
+              }
+            }
+          );
+        });
+      }
+
       el.querySelector('#f-g-save').addEventListener('click', async () => {
-        const name = el.querySelector('#f-gname').value.trim();
+        const name = hasStudents ? group.name : el.querySelector('#f-gname').value.trim();
         if (!name) {
           toast('Vul een naam in.', 'error');
           return;
@@ -163,25 +254,60 @@ export async function openGroupModal(id) {
           return;
         }
 
-        const ids = [...el.querySelectorAll('#f-gstudents input:checked')].map((i) =>
-          Number(i.value)
-        );
-        const gid = id || Store.makeGroupId(name, year);
-        await Store.upsertGroup(
-          {
-            id: gid,
-            name,
-            jaarlaag: parsed.jaarlaag,
-            subcategory: parsed.subcategory ?? undefined,
-            student_ids: ids,
-          },
-          year
-        );
+        if (isEdit) {
+          // Collect new student_ids per group from table checkboxes
+          const byGroup = {};
+          groupsInJaarlaag.forEach((g) => (byGroup[g.id] = []));
+          el.querySelectorAll('tbody input[type="checkbox"]:checked').forEach((cb) => {
+            if (byGroup[cb.dataset.groupId])
+              byGroup[cb.dataset.groupId].push(Number(cb.dataset.studentId));
+          });
+
+          const allGroups = await Store.getGroups(year);
+          for (const g of groupsInJaarlaag) {
+            const existing = allGroups.find((ag) => ag.id === g.id);
+            if (!existing) continue;
+            const newIds = byGroup[g.id] ?? [];
+            const nameChanged = g.id === id && !hasStudents && name !== existing.name;
+            const idsChanged =
+              [...existing.student_ids].sort((a, b) => a - b).join(',') !==
+              [...newIds].sort((a, b) => a - b).join(',');
+            if (!idsChanged && !nameChanged) continue;
+
+            let updated = { ...existing, student_ids: newIds };
+            if (nameChanged) {
+              updated = {
+                ...updated,
+                name,
+                jaarlaag: parsed.jaarlaag,
+                subcategory: parsed.subcategory ?? undefined,
+              };
+            }
+            await Store.upsertGroup(updated, year);
+          }
+        } else {
+          const ids = [...el.querySelectorAll('#f-gstudents input:checked')].map((i) =>
+            Number(i.value)
+          );
+          const gid = Store.makeGroupId(name, year);
+          await Store.upsertGroup(
+            {
+              id: gid,
+              name,
+              jaarlaag: parsed.jaarlaag,
+              subcategory: parsed.subcategory ?? undefined,
+              student_ids: ids,
+            },
+            year
+          );
+        }
+
         closeModal();
         toast('Groep opgeslagen.', 'success');
         renderGroepen();
       });
-    }
+    },
+    'modal-xl'
   );
 }
 

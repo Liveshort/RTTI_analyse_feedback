@@ -360,6 +360,68 @@ export async function openGroupStudentsModal(groupId, year) {
     })
     .join('');
 
+  // ── Averages footer row ────────────────────────────────────────────────────
+  const avgRowExamCells = byPeriode
+    .map(({ families }) =>
+      families
+        .map((f, fi) => {
+          const grades = students
+            .map((s) => bestGradeForFamily(s, f).grade)
+            .filter((g) => g !== null);
+          const avg = grades.length > 0 ? grades.reduce((a, b) => a + b, 0) / grades.length : null;
+          const label = avg !== null ? formatGrade(avg) : '—';
+          const bc = gradeBorderColor(avg);
+          const tc = gradeTextColor(avg);
+          const fw = avg !== null && avg < 5.5 ? 'bold' : '500';
+          const borderR = fi === families.length - 1 ? 'border-right:1px solid #e0e0e0' : '';
+          return (
+            `<td style="text-align:right;padding:3px 4px;background:#f0f4ff">` +
+            `<span style="text-align:center;display:inline-block;min-width:36px;padding:1px 5px;border:2px solid ${bc};` +
+            `border-radius:4px;font-size:12px;font-weight:${fw};color:${tc}">${label}</span></td>` +
+            `<td style="background:#f0f4ff;${borderR}"></td>`
+          );
+        })
+        .join('')
+    )
+    .join('');
+
+  const yearAvgs = students
+    .map((s) => {
+      const pairs = examFamilies.map((f) => ({
+        grade: bestGradeForFamily(s, f).grade,
+        weging: f.original.weging,
+      }));
+      return calcWeightedAvg(pairs);
+    })
+    .filter((g) => g !== null);
+  const yearAvgOfAvgs =
+    yearAvgs.length > 0 ? yearAvgs.reduce((a, b) => a + b, 0) / yearAvgs.length : null;
+
+  const seAvgs = students.map((s) => dossierAvgMap[s.id]).filter((g) => g !== null);
+  const seAvgOfAvgs = seAvgs.length > 0 ? seAvgs.reduce((a, b) => a + b, 0) / seAvgs.length : null;
+
+  const avgRowSummary =
+    `<td style="text-align:center;padding:3px 4px;background:#f0f4ff;border-left:2px solid var(--border)">${
+      yearAvgOfAvgs !== null
+        ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(yearAvgOfAvgs)};` +
+          `border-radius:4px;font-size:12px;font-weight:${yearAvgOfAvgs < 5.5 ? 'bold' : '500'};color:${gradeTextColor(yearAvgOfAvgs)}">${formatGrade(yearAvgOfAvgs)}</span>`
+        : `<span style="color:#aaa">—</span>`
+    }</td>` +
+    `<td style="text-align:center;padding:3px 4px;background:#f0f4ff">${
+      seAvgOfAvgs !== null
+        ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(seAvgOfAvgs)};` +
+          `border-radius:4px;font-size:12px;font-weight:${seAvgOfAvgs < 5.5 ? 'bold' : '500'};color:${gradeTextColor(seAvgOfAvgs)}">${formatGrade(seAvgOfAvgs)}</span>`
+        : `<span style="color:#aaa">—</span>`
+    }</td>`;
+
+  const avgRow =
+    `<tr style="border-top:2px solid var(--border)">` +
+    `<td style="padding:5px 12px 5px 4px;white-space:nowrap;background:#f0f4ff;font-size:11px;` +
+    `font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Gemiddelde</td>` +
+    avgRowExamCells +
+    avgRowSummary +
+    `</tr>`;
+
   showModal(
     `
     <h3>${escHtml(group.name)}</h3>
@@ -371,6 +433,7 @@ export async function openGroupStudentsModal(groupId, year) {
           <tr>${examBadgeCols}</tr>
         </thead>
         <tbody>${rows}</tbody>
+        <tfoot>${avgRow}</tfoot>
       </table>
     </div>
   `,
