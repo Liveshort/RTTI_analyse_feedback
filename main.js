@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
 
 // ---------------------------------------------------------------------------
 // Data directory: always next to the executable (or next to main.js in dev)
@@ -169,6 +170,96 @@ ipcMain.handle('fs:ensureDir', (_event, relPath) => {
 
 // Absolute path of data dir (for display/debugging).
 ipcMain.handle('fs:getDataDir', () => getDataDir());
+
+// ---------------------------------------------------------------------------
+// Typst compiler
+// ---------------------------------------------------------------------------
+function getTypstBinary() {
+  const exe = process.platform === 'win32' ? 'typst.exe' : 'typst';
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'typst', exe);
+  }
+  const platformDir = { win32: 'win', darwin: 'mac', linux: 'linux' }[process.platform];
+  const archDir = process.arch === 'arm64' ? 'aarch64' : 'x_86_64';
+  return path.join(__dirname, 'bin', 'typst', platformDir, archDir, exe);
+}
+
+// Smoke-test: returns { success, version } or { success: false, error }
+ipcMain.handle('typst:version', () => {
+  const bin = getTypstBinary();
+  return new Promise((resolve) => {
+    execFile(bin, ['--version'], (err, stdout) => {
+      if (err) resolve({ success: false, error: err.message });
+      else resolve({ success: true, version: stdout.trim() });
+    });
+  });
+});
+
+// Compile a .typ file to PDF.
+// typFilePath: absolute path to the .typ source file
+// outputPdfPath: absolute path for the output PDF
+ipcMain.handle('typst:compile', (_event, typFilePath, outputPdfPath) => {
+  const bin = getTypstBinary();
+  return new Promise((resolve) => {
+    execFile(bin, ['compile', typFilePath, outputPdfPath], (err, _stdout, stderr) => {
+      if (err) resolve({ success: false, error: stderr || err.message });
+      else resolve({ success: true, outputPdfPath });
+    });
+  });
+});
+
+// Compile the rtti_export.typ template with injected student data.
+// examInfo: { name, global_max_points }
+// students: [{ name, student_nr, group, score, max_score, grade, vragen: [...] }, ...]
+// Writes a temporary wrapper .typ, compiles it, then deletes it.
+ipcMain.handle('app:renderRapportPdf', (_event, _examId, students, examInfo) => {
+  const bin = getTypstBinary();
+  const appDir = app.isPackaged ? path.dirname(process.execPath) : __dirname;
+  const tmpDir = path.join(appDir, 'temp');
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  // Recursively serialize a JS value to a Typst literal.
+  function toTypst(val) {
+    if (val === null || val === undefined) return 'none';
+    if (typeof val === 'boolean') return val ? 'true' : 'false';
+    if (typeof val === 'number') return isFinite(val) ? String(val) : '0';
+    if (typeof val === 'string') {
+      return '"' + val.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+    }
+    if (Array.isArray(val)) {
+      if (val.length === 0) return '()';
+      return '(' + val.map(toTypst).join(', ') + ',)';
+    }
+    if (typeof val === 'object') {
+      const pairs = Object.entries(val).map(([k, v]) => `${k}: ${toTypst(v)}`);
+      return '(' + pairs.join(', ') + ')';
+    }
+    return '"' + String(val) + '"';
+  }
+
+  // The wrapper imports setup + render, applies heading styles via #show: setup,
+  // then calls render with the injected data.
+  const wrapperContent =
+    `#import "../include/templates/rtti_export.typ": setup, render\n\n` +
+    `#let exam_info = ${toTypst(examInfo ?? {})}\n` +
+    `#let student_data = ${toTypst(students ?? [])}\n\n` +
+    `#show: setup\n` +
+    `#render(exam_info, student_data)\n`;
+
+  const wrapperPath = path.join(tmpDir, '_rapport_run.typ');
+  const outputPdf = path.join(tmpDir, 'rapport_preview.pdf');
+  fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
+
+  return new Promise((resolve) => {
+    execFile(bin, ['compile', '--root', appDir, wrapperPath, outputPdf], (err, _stdout, stderr) => {
+      try {
+        fs.unlinkSync(wrapperPath);
+      } catch (_) {}
+      if (err) resolve({ success: false, error: stderr || err.message });
+      else resolve({ success: true, pdfPath: outputPdf });
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Window

@@ -10,7 +10,7 @@ import { renderLeerlingen, renderStudentList, leerlingenState } from './screens/
 import { renderGroepen, renderGroepenForYear } from './screens/groepen.js';
 import { renderToetsen, renderToetsenList } from './screens/toetsen.js';
 import { renderObservaties } from './screens/observaties.js';
-import { renderRapport } from './screens/rapport.js';
+import { renderRapport, updateRapportExamsByJaarlaag, generateRapport } from './screens/rapport.js';
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 const topbar = document.getElementById('topbar');
@@ -169,14 +169,15 @@ function initSelects() {
       Store.preloadScores(v);
     },
   });
+  SEL.rapportJaarlaag = new CustomSelect(document.getElementById('rapport-jaarlaag-select'), {
+    placeholder: '— kies jaarlaag —',
+    onChange: (v) => updateRapportExamsByJaarlaag(v),
+  });
   SEL.rapportExam = new CustomSelect(document.getElementById('rapport-exam-select'), {
     placeholder: '— kies toets —',
+    disabled: true,
     onChange: (v) => {
-      const content = document.getElementById('rapport-content');
-      content.innerHTML = v
-        ? `<p>Rapport genereren komt in Phase 4.</p>
-           <button class="btn-primary" disabled>&#128196; Download .docx (binnenkort)</button>`
-        : '<p class="hint">Selecteer een toets.</p>';
+      if (v) generateRapport(v);
     },
   });
 }

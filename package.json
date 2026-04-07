@@ -22,7 +22,15 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
-    "extraResources": [],
+    "extraResources": [
+      {
+        "from": "bin/typst/win/x_86_64",
+        "to": "typst",
+        "filter": [
+          "typst.exe"
+        ]
+      }
+    ],
     "files": [
       "**/*",
       "!data/**",

@@ -19,3 +19,6 @@ Thumbs.db
 # Editor files
 .vscode/
 *.swp
+
+# Temp files
+temp/
