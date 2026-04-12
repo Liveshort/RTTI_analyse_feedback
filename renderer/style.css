@@ -1068,6 +1068,55 @@ body {
   overflow-x: auto;
 }
 
+/* ── Score grid keyboard help panel ──────────────────────────────────────── */
+#scores-help-panel {
+  background: #f4f6f9;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--text);
+}
+.scores-help-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 24px;
+}
+.scores-help-grid strong {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+}
+.scores-help-grid > div > strong:first-child {
+  margin-top: 0;
+}
+.scores-help-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.scores-help-table td {
+  padding: 1px 6px 1px 0;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.scores-help-table td:first-child {
+  font-family: monospace;
+  font-size: 11px;
+  color: #3a3a4a;
+  min-width: 90px;
+}
+.scores-help-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-style: italic;
+}
+
 /* ── HOT column headers — bold, italic, bottom-aligned ─────────────────────── */
 .handsontable th {
   white-space: normal !important;
@@ -1405,6 +1454,57 @@ code {
 .obs-icon-btn:hover {
   border-color: var(--primary) !important;
   background: #f0f5ff !important;
+}
+
+/* Collapsible "Meer iconen" panel */
+.obs-icon-more {
+  width: 100%;
+  margin-top: 4px;
+}
+.obs-icon-more-summary {
+  font-size: 12px;
+  color: var(--primary);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: inline-block;
+  padding: 2px 4px;
+}
+.obs-icon-more-summary::-webkit-details-marker {
+  display: none;
+}
+.obs-icon-more-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* Textarea inside form-group */
+.form-group textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  background: var(--surface);
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
+  width: 100%;
+}
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+.form-group textarea::placeholder {
+  color: #b0b8c4;
+  font-style: italic;
+}
+
+/* Subject toggle group — allow wrapping for longer labels */
+#obs-subj-group {
+  flex-wrap: wrap;
 }
 
 /* ── Startup screen ──────────────────────────────────────────────────────── */

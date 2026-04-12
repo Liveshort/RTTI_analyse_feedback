@@ -105,6 +105,7 @@ function assembleVragen(exam, questionScores, allQuestionScores) {
     return {
       label,
       rtti: q.rtti,
+      kind: qKind(q),
       rtti_color: RTTI_COLORS[q.rtti] ?? '#888888',
       score, // null if not entered
       max: q.max_points,
@@ -153,9 +154,9 @@ export async function generateRapport(examId) {
         if (!questionScores) return null;
         const hasEntry = Object.values(questionScores).some((v) => v !== null && v !== undefined);
         if (!hasEntry) return null;
-        const { scored, examMaxTotal, grade } = Store.calcResults(exam, questionScores);
+        const { scored, normalMax, grade } = Store.calcResults(exam, questionScores);
         const group = groups.find((g) => g.student_ids.includes(s.id));
-        return { student: s, group, scored, examMaxTotal, grade, questionScores };
+        return { student: s, group, scored, normalMax, grade, questionScores };
       })
     )
   ).filter(Boolean);
@@ -178,7 +179,7 @@ export async function generateRapport(examId) {
     student_nr: String(e.student.id),
     group: e.group?.name ?? '\u2014',
     score: e.scored,
-    max_score: e.examMaxTotal,
+    max_score: e.normalMax,
     grade:
       e.grade !== null ? (Math.round(e.grade * 10) / 10).toFixed(1).replace('.', ',') : '\u2014',
     vragen: assembleVragen(exam, e.questionScores, allQuestionScores),

@@ -5,18 +5,62 @@ import { showModal, closeModal, toast, escHtml } from '../app.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const OBS_PRESET_ICONS = [
-  { icon: '📏', label: 'Eenheid vergeten' },
-  { icon: '🔄', label: 'Formule herschrijven' },
-  { icon: '✏️', label: 'Rekenfout' },
-  { icon: '±', label: 'Tekenfout' },
-  { icon: '🔢', label: 'Significante cijfers' },
-  { icon: '📐', label: 'Diagram/schets ontbreekt' },
-  { icon: '💬', label: 'Onvolledige redenering' },
-  { icon: '🔗', label: 'Vergelijking niet opstellen' },
-  { icon: '🎯', label: 'Verkeerde formule gekozen' },
-  { icon: '⚡', label: 'Eenheden niet omgezet' },
-  { icon: '🔍', label: 'Aflezing grafiek' },
-  { icon: '📝', label: 'Definitie onvolledig' },
+  // Meten & rekenen
+  { icon: '📏' },
+  { icon: '📐' },
+  { icon: '🔢' },
+  { icon: '🧮' },
+  { icon: '➗' },
+  { icon: '➕' },
+  { icon: '➖' },
+  { icon: '📊' },
+  { icon: '📈' },
+  { icon: '📉' },
+  // Schrijven & noteren
+  { icon: '✏️' },
+  { icon: '📝' },
+  { icon: '📌' },
+  { icon: '📎' },
+  { icon: '🔖' },
+  { icon: '📋' },
+  { icon: '📓' },
+  { icon: '📚' },
+  { icon: '🗒️' },
+  { icon: '📖' },
+  // Denken & analyseren
+  { icon: '🔍' },
+  { icon: '🔎' },
+  { icon: '💡' },
+  { icon: '💬' },
+  { icon: '🎯' },
+  { icon: '✅' },
+  { icon: '❌' },
+  { icon: '⚠️' },
+  { icon: '❓' },
+  { icon: '🧠' },
+  // Scheikunde & fysica
+  { icon: '⚗️' },
+  { icon: '🧪' },
+  { icon: '🧫' },
+  { icon: '🧬' },
+  { icon: '🔬' },
+  { icon: '🔭' },
+  { icon: '🌡️' },
+  { icon: '⚡' },
+  { icon: '🧲' },
+  { icon: '💧' },
+  // Biologie & natuur
+  { icon: '🌱' },
+  { icon: '🦠' },
+  { icon: '🌿' },
+  { icon: '🦋' },
+  { icon: '🐚' },
+  // Overige
+  { icon: '🔄' },
+  { icon: '🔗' },
+  { icon: '🎲' },
+  { icon: '⏱️' },
+  { icon: '🚀' },
 ];
 
 export function renderObservaties() {
@@ -70,15 +114,42 @@ export async function openObsModal(existingId) {
   const obs = existingId
     ? JSON.parse(JSON.stringify(allObs.find((o) => o.id === existingId) ?? {}))
     : {
-        subject: Store.getActiveSubject(),
         id: 'obs-' + Date.now(),
         naam: '',
         icon: OBS_PRESET_ICONS[0].icon,
         uitleg: '',
+        leeradvies: '',
+        subjects: [Store.getActiveSubject()],
         jaarlagen: [],
       };
   const isEdit = !!existingId;
+
+  // Normalize legacy single-subject field to array
+  if (!Array.isArray(obs.subjects) || obs.subjects.length === 0) {
+    obs.subjects = obs.subject ? [obs.subject] : [Store.getActiveSubject()];
+  }
+
   const jlAll = ['1', '2', '3', '4', '5', '6'];
+
+  const SUBJECT_BTNS = [
+    { code: 'nat', label: 'Natuurkunde' },
+    { code: 'schk', label: 'Scheikunde' },
+    { code: 'bio', label: 'Biologie' },
+    { code: 'wisob', label: 'Wis OB' },
+    { code: 'wisa', label: 'WisA' },
+    { code: 'wisb', label: 'WisB' },
+    { code: 'wisc', label: 'WisC' },
+    { code: 'wisd', label: 'WisD' },
+  ];
+
+  const iconBtn = (p) =>
+    `<button type="button" class="obs-icon-btn${p.icon === obs.icon ? ' selected' : ''}"
+      data-icon="${escHtml(p.icon)}"
+      style="font-size:18px;width:40px;height:40px;border-radius:6px;
+        border:2px solid ${p.icon === obs.icon ? 'var(--primary)' : 'var(--border)'};
+        background:${p.icon === obs.icon ? '#e8f0fb' : 'var(--bg)'};
+        cursor:pointer;transition:all .1s"
+      >${escHtml(p.icon)}</button>`;
 
   showModal(
     `
@@ -90,24 +161,38 @@ export async function openObsModal(existingId) {
     <div class="form-group">
       <label>Icoon</label>
       <div id="obs-icon-grid" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
-        ${OBS_PRESET_ICONS.map(
-          (p) =>
-            `<button type="button" class="obs-icon-btn${p.icon === obs.icon ? ' selected' : ''}"
-            data-icon="${escHtml(p.icon)}" title="${escHtml(p.label)}"
-            style="font-size:18px;width:40px;height:40px;border-radius:6px;
-              border:2px solid ${p.icon === obs.icon ? 'var(--primary)' : 'var(--border)'};
-              background:${p.icon === obs.icon ? '#e8f0fb' : 'var(--bg)'};
-              cursor:pointer;transition:all .1s"
-            >${escHtml(p.icon)}</button>`
-        ).join('')}
+        ${OBS_PRESET_ICONS.slice(0, 12).map(iconBtn).join('')}
+        <details class="obs-icon-more">
+          <summary class="obs-icon-more-summary">Meer iconen ▾</summary>
+          <div class="obs-icon-more-grid">
+            ${OBS_PRESET_ICONS.slice(12).map(iconBtn).join('')}
+          </div>
+        </details>
       </div>
       <div style="margin-top:6px;font-size:12px;color:var(--muted)">
         Geselecteerd: <span id="obs-icon-preview" style="font-size:16px">${escHtml(obs.icon)}</span>
       </div>
     </div>
     <div class="form-group">
-      <label>Uitleg</label>
-      <input id="f-ouit" type="text" value="${escHtml(obs.uitleg)}" placeholder="Korte omschrijving voor de leraar" />
+      <label>Korte uitleg</label>
+      <textarea id="f-ouit" rows="3"
+        placeholder="Bijvoorbeeld: Leerling is bij het beantwoorden van rekenvragen de eenheid vergeten."
+      >${escHtml(obs.uitleg)}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Leeradvies (voor de leerling bij de toetsanalyse)</label>
+      <textarea id="f-oleeradvies" rows="4"
+        placeholder="Bijvoorbeeld: Vergeet bij het beantwoorden van vragen nooit te controleren of je de eenheid vergeten bent. Gebruik de GFBA-methode (Gegevens, Formule, Berekening &amp; Antwoord). In de Antwoordstap controleer je of het antwoord de juiste eenheid heeft. Maak nu opgave 1 en 2 van H1 nog eens volgens de GFBA-methode."
+      >${escHtml(obs.leeradvies ?? '')}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Vakken</label>
+      <div class="btn-toggle-group" id="obs-subj-group">
+        ${SUBJECT_BTNS.map(
+          (s) =>
+            `<button type="button" class="tog-btn subj-btn${obs.subjects.includes(s.code) ? ' selected' : ''}" data-subj="${s.code}">${escHtml(s.label)}</button>`
+        ).join('')}
+      </div>
     </div>
     <div class="form-group">
       <label>Jaarlagen</label>
@@ -140,6 +225,10 @@ export async function openObsModal(existingId) {
         el.querySelector('#obs-icon-preview').textContent = selectedIcon;
       });
 
+      el.querySelectorAll('.subj-btn').forEach((b) =>
+        b.addEventListener('click', () => b.classList.toggle('selected'))
+      );
+
       el.querySelectorAll('.jl-btn').forEach((b) =>
         b.addEventListener('click', () => b.classList.toggle('selected'))
       );
@@ -147,16 +236,31 @@ export async function openObsModal(existingId) {
       el.querySelector('#f-osave').addEventListener('click', async () => {
         const naam = el.querySelector('#f-onam').value.trim();
         const uitleg = el.querySelector('#f-ouit').value.trim();
+        const leeradvies = el.querySelector('#f-oleeradvies').value.trim();
+        const subjects = [...el.querySelectorAll('.subj-btn.selected')].map((b) => b.dataset.subj);
         const jaarlagen = [...el.querySelectorAll('.jl-btn.selected')].map((b) => b.dataset.jl);
         if (!naam) {
           toast('Vul een naam in.', 'error');
+          return;
+        }
+        if (subjects.length === 0) {
+          toast('Selecteer minstens één vak.', 'error');
           return;
         }
         if (jaarlagen.length === 0) {
           toast('Selecteer minstens één jaarlaag.', 'error');
           return;
         }
-        const updated = { ...obs, naam, icon: selectedIcon, uitleg, jaarlagen };
+        const updated = {
+          ...obs,
+          naam,
+          icon: selectedIcon,
+          uitleg,
+          leeradvies,
+          subjects,
+          jaarlagen,
+        };
+        delete updated.subject;
         await Store.upsertObservation(updated);
         closeModal();
         toast('Observatie opgeslagen.', 'success');

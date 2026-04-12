@@ -10,13 +10,60 @@ import { showModal, closeModal, toast, persistentError, escHtml, formatGrade } f
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCREEN: Scores invoeren
-// Col layout: [id, naam, ...N scores, spacer, totaal, cijfer, spacer, R%, T1%, T2%, I%]
+// Col layout (TOFF = O > 0 ? O + 1 : 0):
+//   0..1        = id, naam
+//   2..N+1      = question scores
+//   N+2         = spacer1
+//   N+3..N+2+O  = obs checkboxes (only when O > 0)
+//   N+3+O       = spacer2 (only when O > 0)
+//   N+3+TOFF    = Totaal
+//   N+4+TOFF    = Cijfer
+//   N+5+TOFF    = spacer3
+//   N+6+TOFF    = R%
+//   N+7+TOFF    = T1%
+//   N+8+TOFF    = T2%
+//   N+9+TOFF    = I%
+// When O=0, TOFF=0 and layout matches the simpler variant without obs cols.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let activeExam = null;
 let activeObs = []; // observaties applicable to current exam jaarlaag
 let activeGridData = [];
 let hotInstances = [];
+let scoreHistory = []; // undo stack
+let redoHistory = []; // redo stack
+let undoKeydownHandler = null;
+let undoBtnEl = null;
+let redoBtnEl = null;
+const MAX_HISTORY = 50;
+
+function updateUndoRedoBtns() {
+  if (undoBtnEl) undoBtnEl.disabled = scoreHistory.length === 0;
+  if (redoBtnEl) redoBtnEl.disabled = redoHistory.length === 0;
+}
+
+function pushHistory(entry) {
+  scoreHistory.push(entry);
+  if (scoreHistory.length > MAX_HISTORY) scoreHistory.shift();
+  redoHistory = []; // a new action clears the redo stack
+  updateUndoRedoBtns();
+}
+
+async function undoLast() {
+  if (scoreHistory.length === 0) return;
+  const entry = scoreHistory.pop();
+  redoHistory.push(entry);
+  await entry.undo();
+  updateUndoRedoBtns();
+}
+
+async function redoLast() {
+  if (redoHistory.length === 0) return;
+  const entry = redoHistory.pop();
+  scoreHistory.push(entry);
+  await entry.redo();
+  updateUndoRedoBtns();
+}
 
 export function destroyHotInstances() {
   hotInstances.forEach((h) => {
@@ -28,6 +75,14 @@ export function destroyHotInstances() {
   activeGridData = [];
   activeExam = null;
   activeObs = [];
+  scoreHistory = [];
+  redoHistory = [];
+  undoBtnEl = null;
+  redoBtnEl = null;
+  if (undoKeydownHandler) {
+    document.removeEventListener('keydown', undoKeydownHandler);
+    undoKeydownHandler = null;
+  }
 }
 
 export async function openScoreModal(examId, year, deps) {
@@ -46,6 +101,13 @@ export async function openScoreModal(examId, year, deps) {
             : ''
         }
         <em style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(exam.title)}</em>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
+        <button class="btn-secondary" id="sc-undo" title="Ongedaan maken (Ctrl+Z)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B6;</button>
+        <button class="btn-secondary" id="sc-redo" title="Opnieuw (Ctrl+Y)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B7;</button>
+        <button class="btn-secondary" id="sc-help" disabled
+          title="Navigeer sneller door gebruik te maken van de numpad:&#10;0-9: Punten invullen&#10;Punt (.): N invullen&#10;Enter: Bevestigen &amp; volgende veld&#10;/ of *: Vorige / volgende veld&#10;- of +: Vorige / volgende leerling"
+          style="cursor:default;color:#9aa0ab;border-color:#d0d6df;">Help ?</button>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         <button class="btn-secondary" id="sc-edit-exam">Toets bewerken</button>
@@ -84,6 +146,23 @@ export async function openScoreModal(examId, year, deps) {
         .querySelectorAll('.spin-btn')
         .forEach((b) => b.addEventListener('click', () => setTimeout(handleNtermChange, 0)));
       ntermSp.querySelector('.spin-val').addEventListener('change', handleNtermChange);
+
+      undoBtnEl = el.querySelector('#sc-undo');
+      redoBtnEl = el.querySelector('#sc-redo');
+      undoBtnEl.addEventListener('click', () => undoLast());
+      redoBtnEl.addEventListener('click', () => redoLast());
+
+      undoKeydownHandler = (e) => {
+        if (e.ctrlKey && !e.shiftKey && e.key === 'z') {
+          e.preventDefault();
+          undoLast();
+        }
+        if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) {
+          e.preventDefault();
+          redoLast();
+        }
+      };
+      document.addEventListener('keydown', undoKeydownHandler);
 
       el.querySelector('#sc-edit-exam').addEventListener('click', () => {
         closeModal();
@@ -141,10 +220,9 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
     section.innerHTML = `<h3 class="group-heading">${escHtml(group.name)}</h3><div id="hot-g${gi}"></div>`;
     container.appendChild(section);
 
-    // Row: [id, naam, ...N scores, spacer, totaal, cijfer, spacer2, ...O obs, spacer3?, R%, T1%, T2%, I%]
+    // Row: [id, naam, ...N scores, spacer1, ...O obs, spacer2?, Totaal, Cijfer, spacer3, R%, T1%, T2%, I%]
     const N = exam.questions.length;
     const gridData = [];
-    // Determine applicable obs from the exam's explicit selection (write to module-level)
     const allObs = Store.getObservatiesSync();
     activeObs = (exam.obs_ids ?? []).map((id) => allObs.find((o) => o.id === id)).filter(Boolean);
 
@@ -162,23 +240,22 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
         const v = examScores[q.id];
         row.push(v === undefined ? '' : v === null ? 'N' : String(v));
       });
-      // spacer, totaal, cijfer, spacer2
-      row.push('', '', '', '');
-      // obs cols (if any)
+      // spacer1 (N+2)
+      row.push('');
+      // obs cols (N+3..N+2+O) and spacer2 (N+3+O) — only when O > 0
       if (activeObs.length > 0) {
         activeObs.forEach((o) => row.push(examObsIds.includes(o.id)));
-        row.push(''); // spacer3
+        row.push(''); // spacer2
       }
-      // R%, T1%, T2%, I%
-      row.push('', '', '', '');
+      // Totaal, Cijfer, spacer3, R%, T1%, T2%, I%
+      row.push('', '', '', '', '', '', '');
       gridData.push(row);
     }
 
     // Summary rows: avg (sentinel __avg__) then std dev (sentinel __std__)
     const O = activeObs.length;
-    const ROFF = O > 0 ? O + 1 : 0;
-    const obsTrail = O > 0 ? [...Array(O).fill(''), ''] : [];
-    const trailCells = ['', '', '', '', ...obsTrail, '', '', '', ''];
+    const obsInsert = O > 0 ? [...Array(O).fill(''), ''] : [];
+    const trailCells = ['', ...obsInsert, '', '', '', '', '', '', ''];
     gridData.push(['__avg__', 'Gemiddelde', ...Array(N).fill(''), ...trailCells]);
     gridData.push(['__std__', 'Standaarddeviatie', ...Array(N).fill(''), ...trailCells]);
 
@@ -203,25 +280,24 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
 }
 
 /**
- * Col layout (N = questions, O = applicable obs):
- *   0..1    = id, naam
- *   2..N+1  = question scores
- *   N+2     = spacer
- *   N+3     = totaal
- *   N+4     = cijfer
- *   N+5     = spacer2 (obs separator)
- *   N+6..N+5+O = obs checkboxes (if O > 0)
- *   N+6+O   = spacer3 (rtti separator, only if O > 0)
- *   N+6+ROFF = R%    where ROFF = O>0 ? O+1 : 0
- *   N+7+ROFF = T1%
- *   N+8+ROFF = T2%
- *   N+9+ROFF = I%
+ * Col layout (N = questions, O = applicable obs, TOFF = O > 0 ? O + 1 : 0):
+ *   0..1        = id, naam
+ *   2..N+1      = question scores
+ *   N+2         = spacer1
+ *   N+3..N+2+O  = obs checkboxes (if O > 0)
+ *   N+3+O       = spacer2 (if O > 0)
+ *   N+3+TOFF    = Totaal
+ *   N+4+TOFF    = Cijfer
+ *   N+5+TOFF    = spacer3
+ *   N+6+TOFF    = R%
+ *   N+7+TOFF    = T1%
+ *   N+8+TOFF    = T2%
+ *   N+9+TOFF    = I%
  */
 export function recomputeRow(gridData, exam, rowIdx, O = 0) {
   const N = exam.questions.length;
-  const ROFF = O > 0 ? O + 1 : 0;
+  const TOFF = O > 0 ? O + 1 : 0;
   const row = gridData[rowIdx];
-  const examMaxTotal = exam.questions.reduce((s, q) => s + q.max_points, 0);
 
   const questionScores = {};
   exam.questions.forEach((q, qi) => {
@@ -237,43 +313,43 @@ export function recomputeRow(gridData, exam, rowIdx, O = 0) {
   });
 
   if (Object.keys(questionScores).length === 0) {
-    row[N + 2] = '';
-    row[N + 3] = '';
-    row[N + 4] = '';
-    row[N + 5] = '';
-    if (O > 0) {
-      for (let i = 0; i < O; i++) row[N + 6 + i] = false;
-      row[N + 6 + O] = '';
-    }
-    row[N + 6 + ROFF] = '';
-    row[N + 7 + ROFF] = '';
-    row[N + 8 + ROFF] = '';
-    row[N + 9 + ROFF] = '';
+    row[N + 2] = ''; // spacer1
+    if (O > 0) row[N + 3 + O] = ''; // spacer2
+    row[N + 3 + TOFF] = '';
+    row[N + 4 + TOFF] = '';
+    row[N + 5 + TOFF] = '';
+    row[N + 6 + TOFF] = '';
+    row[N + 7 + TOFF] = '';
+    row[N + 8 + TOFF] = '';
+    row[N + 9 + TOFF] = '';
     return;
   }
 
   const res = Store.calcResults(exam, questionScores);
-  row[N + 2] = '';
-  row[N + 3] = `${res.scored} / ${examMaxTotal}`;
-  row[N + 4] = res.grade !== null ? formatGrade(res.grade) : '';
-  row[N + 5] = '';
-  if (O > 0) row[N + 6 + O] = ''; // spacer3 — obs cols untouched
-  row[N + 6 + ROFF] = res.R === 'NVT' ? 'NVT' : res.R + '%';
-  row[N + 7 + ROFF] = res.T1 === 'NVT' ? 'NVT' : res.T1 + '%';
-  row[N + 8 + ROFF] = res.T2 === 'NVT' ? 'NVT' : res.T2 + '%';
-  row[N + 9 + ROFF] = res.I === 'NVT' ? 'NVT' : res.I + '%';
+  row[N + 2] = ''; // spacer1
+  if (O > 0) row[N + 3 + O] = ''; // spacer2 — obs cols untouched
+  row[N + 3 + TOFF] =
+    res.hasBonus && res.scored > res.normalMax
+      ? `${res.scored} / ${res.normalMax} (+)`
+      : `${res.scored} / ${res.normalMax}`;
+  row[N + 4 + TOFF] = res.grade !== null ? formatGrade(res.grade) : '';
+  row[N + 5 + TOFF] = ''; // spacer3
+  row[N + 6 + TOFF] = res.R === 'NVT' ? 'NVT' : res.R + '%';
+  row[N + 7 + TOFF] = res.T1 === 'NVT' ? 'NVT' : res.T1 + '%';
+  row[N + 8 + TOFF] = res.T2 === 'NVT' ? 'NVT' : res.T2 + '%';
+  row[N + 9 + TOFF] = res.I === 'NVT' ? 'NVT' : res.I + '%';
 }
 
 export function recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O = 0) {
   const N = exam.questions.length;
-  const ROFF = O > 0 ? O + 1 : 0;
+  const TOFF = O > 0 ? O + 1 : 0;
   const examMaxTotal = exam.questions.reduce((s, q) => s + q.max_points, 0);
   const totaals = [],
     grades = [];
 
   for (let r = 0; r < summaryIdx; r++) {
-    const totaalStr = gridData[r][N + 3];
-    const gradeStr = gridData[r][N + 4];
+    const totaalStr = gridData[r][N + 3 + TOFF];
+    const gradeStr = gridData[r][N + 4 + TOFF];
     if (totaalStr) {
       const scored = parseInt(totaalStr, 10);
       if (!isNaN(scored)) totaals.push(scored);
@@ -285,18 +361,18 @@ export function recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O = 0) {
   }
 
   function clearSpecialRow(row) {
-    row[N + 2] = '';
-    row[N + 3] = '';
-    row[N + 4] = '';
-    row[N + 5] = '';
+    row[N + 2] = ''; // spacer1
     if (O > 0) {
-      for (let i = 0; i < O; i++) row[N + 6 + i] = '';
-      row[N + 6 + O] = '';
+      for (let i = 0; i < O; i++) row[N + 3 + i] = '';
+      row[N + 3 + O] = ''; // spacer2
     }
-    row[N + 6 + ROFF] = '';
-    row[N + 7 + ROFF] = '';
-    row[N + 8 + ROFF] = '';
-    row[N + 9 + ROFF] = '';
+    row[N + 3 + TOFF] = '';
+    row[N + 4 + TOFF] = '';
+    row[N + 5 + TOFF] = '';
+    row[N + 6 + TOFF] = '';
+    row[N + 7 + TOFF] = '';
+    row[N + 8 + TOFF] = '';
+    row[N + 9 + TOFF] = '';
   }
 
   // Avg row
@@ -305,9 +381,9 @@ export function recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O = 0) {
     totaals.length > 0 ? totaals.reduce((a, b) => a + b, 0) / totaals.length : null;
   const meanGrade = grades.length > 0 ? grades.reduce((a, b) => a + b, 0) / grades.length : null;
   clearSpecialRow(avgRow);
-  avgRow[N + 3] =
+  avgRow[N + 3 + TOFF] =
     meanTotaal !== null ? meanTotaal.toFixed(1).replace('.', ',') + ' / ' + examMaxTotal : '';
-  avgRow[N + 4] = meanGrade !== null ? meanGrade.toFixed(1).replace('.', ',') : '';
+  avgRow[N + 4 + TOFF] = meanGrade !== null ? meanGrade.toFixed(1).replace('.', ',') : '';
 
   // Std dev row
   if (stdIdx == null) return;
@@ -319,8 +395,8 @@ export function recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O = 0) {
   const sdTotaal = meanTotaal !== null ? sdFn(totaals, meanTotaal) : null;
   const sdGrade = meanGrade !== null ? sdFn(grades, meanGrade) : null;
   clearSpecialRow(sdRow);
-  sdRow[N + 3] = sdTotaal !== null ? sdTotaal.toFixed(1).replace('.', ',') : '';
-  sdRow[N + 4] = sdGrade !== null ? sdGrade.toFixed(1).replace('.', ',') : '';
+  sdRow[N + 3 + TOFF] = sdTotaal !== null ? sdTotaal.toFixed(1).replace('.', ',') : '';
+  sdRow[N + 4 + TOFF] = sdGrade !== null ? sdGrade.toFixed(1).replace('.', ',') : '';
 }
 
 export function createGroupHOT(container, exam, students, gridData, year, obsArr = []) {
@@ -328,16 +404,65 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
   const summaryIdx = gridData.findIndex((r) => r[0] === '__avg__');
   const stdIdx = gridData.findIndex((r) => r[0] === '__std__');
   const O = obsArr.length;
-  const ROFF = O > 0 ? O + 1 : 0;
+  // ── Navigation constants ──────────────────────────────────────────────────
+  const firstQCol = 2;
+  const lastQCol = N + 1;
+  const obsStart = N + 3; // first obs col (only valid when O > 0)
+  const firstObsCol = obsStart;
+  const lastObsCol = O > 0 ? obsStart + O - 1 : -1;
+  const firstDataRow = 0;
+  const lastDataRow = summaryIdx - 1;
 
-  // Question headers: RTTI (top) → pts (+ gap below) → section → number (bottom)
-  const qHeaders = exam.questions.map(
-    (q) =>
+  const editableCols = [
+    ...Array.from({ length: N }, (_, i) => 2 + i),
+    ...(O > 0 ? Array.from({ length: O }, (_, i) => obsStart + i) : []),
+  ];
+
+  function isQCol(col) {
+    return col >= firstQCol && col <= lastQCol;
+  }
+  function isObsCol(col) {
+    return O > 0 && col >= firstObsCol && col <= lastObsCol;
+  }
+  // Returns the first empty question col, or null if all are filled.
+  function firstEmptyQ(row) {
+    for (let c = firstQCol; c <= lastQCol; c++) {
+      const v = gridData[row][c];
+      if (v === '' || v === undefined || v === null) return c;
+    }
+    return null;
+  }
+  function goTo(row, col) {
+    if (row < firstDataRow || row > lastDataRow) return;
+    if (col < 0) return;
+    hot.selectCell(row, col);
+  }
+
+  // ── Selected cell tracking (per HOT instance) ─────────────────────────────
+  let selectedCell = { row: -1, col: -1 };
+
+  // Question headers: RTTI (top) → pts → section → number (bottom)
+  const qHeaders = exam.questions.map((q) => {
+    const isSpecial = qKind(q) !== 'normal';
+    const tooltip =
+      qKind(q) === 'bonus' ? 'Bonusvraag' : qKind(q) === 'diag' ? 'Diagnostische vraag' : '';
+    if (isSpecial) {
+      return (
+        `<span style="color:#9aa0ab;font-style:italic" title="${tooltip}">` +
+        `<span class="hdr-rtti">${escHtml(q.rtti)}</span>` +
+        `<span class="hdr-pts">${q.max_points}p</span>` +
+        `<span class="hdr-opgave" style="color:#9aa0ab">${escHtml(q.section)}</span>` +
+        `<span class="hdr-vraag" style="color:#9aa0ab">${q.number}</span>` +
+        `</span>`
+      );
+    }
+    return (
       `<span class="hdr-rtti">${escHtml(q.rtti)}</span>` +
       `<span class="hdr-pts">${q.max_points}p</span>` +
       `<span class="hdr-opgave">${escHtml(q.section)}</span>` +
       `<span class="hdr-vraag">${q.number}</span>`
-  );
+    );
+  });
 
   const obsHeaders =
     O > 0
@@ -345,23 +470,36 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
           ...obsArr.map(
             (o) => `<span class="hdr-obs" title="${escHtml(o.naam)}">${escHtml(o.icon)}</span>`
           ),
-          '',
+          '', // spacer2 header
         ]
       : [];
+
+  // New order: scores, spacer1, obs+spacer2, Totaal, Cijfer, spacer3, RTTI
   const colHeaders = [
     '#',
     'Naam',
     ...qHeaders,
-    '',
+    '', // spacer1
+    ...obsHeaders,
     'Totaal',
     'Cijfer',
-    '',
-    ...obsHeaders,
+    '', // spacer3
     'R%',
     'T1%',
     'T2%',
     'I%',
   ];
+
+  // ── Highlight helper ──────────────────────────────────────────────────────
+
+  function applyHighlight(TD, row, col) {
+    const onRow = row === selectedCell.row;
+    const onCol = col === selectedCell.col;
+    if (!onRow && !onCol) return;
+    const alpha = onRow && onCol ? 0.16 : 0.08;
+    // backgroundImage overlays on top of the background color already set
+    TD.style.backgroundImage = `linear-gradient(rgba(74,144,217,${alpha}), rgba(74,144,217,${alpha}))`;
+  }
 
   // ── Custom renderers ──────────────────────────────────────────────────────
 
@@ -371,6 +509,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     TD.style.background = isSpecial ? '#e8ecf2' : '#f8f9fb';
     TD.style.textAlign = 'center';
     if (isSpecial) TD.style.color = 'transparent';
+    applyHighlight(TD, row, col);
   }
 
   function naamRenderer(hot, TD, row, col, prop, value) {
@@ -380,6 +519,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     TD.style.color = isSpecial ? 'var(--muted, #7f8c8d)' : '#000';
     TD.style.fontWeight = isSpecial ? '700' : '400';
     TD.style.fontStyle = isSpecial ? 'italic' : 'normal';
+    applyHighlight(TD, row, col);
   }
 
   function calcCentered(hot, TD, row, col, prop, value) {
@@ -387,6 +527,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     TD.style.textAlign = 'center';
     TD.style.background = row === summaryIdx || row === stdIdx ? '#dde4f0' : '#eef2f7';
     TD.style.fontWeight = '600';
+    applyHighlight(TD, row, col);
   }
 
   function gradeRenderer(hot, TD, row, col, prop, value) {
@@ -401,6 +542,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     } else {
       TD.style.background = gradeColor(value) || '#eef2f7';
     }
+    applyHighlight(TD, row, col);
   }
 
   function rttiRenderer(hot, TD, row, col, prop, value) {
@@ -408,41 +550,69 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     TD.style.textAlign = 'center';
     TD.style.fontWeight = '500';
     TD.style.background = row === summaryIdx ? '#e8ecf2' : rttiPctColor(value) || '#eef2f7';
+    applyHighlight(TD, row, col);
   }
 
   function scoreRenderer(hot, TD, row, col, prop, value) {
     Handsontable.renderers.TextRenderer.apply(this, arguments);
     TD.style.textAlign = 'center';
+    TD.style.fontStyle = 'normal'; // reset in case HOT reuses the TD
     if (row === summaryIdx || row === stdIdx) {
       TD.style.background = '#e8ecf2';
+      applyHighlight(TD, row, col);
       return;
     }
-    if (!value) return;
     const q = exam.questions[col - 2];
-    if (!q) return;
+    const kind = q ? qKind(q) : 'normal';
+
+    // Bonus: always blue; Diag: always gray — regardless of value
+    if (kind === 'bonus') {
+      TD.style.background = '#cce5ff';
+      TD.style.fontStyle = 'italic';
+    } else if (kind === 'diag') {
+      TD.style.background = '#d0d6df';
+      TD.style.fontStyle = 'italic';
+    }
+
+    if (!value) {
+      applyHighlight(TD, row, col);
+      return;
+    }
+    if (!q) {
+      applyHighlight(TD, row, col);
+      return;
+    }
+
     const upper = String(value).toUpperCase().trim();
     if (upper === 'N') {
-      TD.style.background = '#cce5ff';
-      TD.style.color = '#004085';
+      TD.style.background = '#d0d6df';
+      TD.style.color = '#4a5568';
       TD.style.fontWeight = '600';
+      applyHighlight(TD, row, col);
       return;
     }
-    if (value === '0') {
-      TD.style.background = '#f8d7da';
-      return;
-    }
+
     const num = Number(value);
     if (isNaN(num) || num < 0 || num > q.max_points) {
       TD.style.background = '#ff0033';
       TD.style.color = '#fff';
       TD.style.fontWeight = '700';
+      applyHighlight(TD, row, col);
       return;
     }
-    if (num === q.max_points) {
-      TD.style.background = '#d4edda';
-      return;
+
+    // Normal questions: apply value-based colors
+    if (kind === 'normal') {
+      if (value === '0') {
+        TD.style.background = '#f8d7da';
+      } else if (num === q.max_points) {
+        TD.style.background = '#d4edda';
+      } else {
+        TD.style.background = '#fff3cd';
+      }
     }
-    TD.style.background = '#fff3cd';
+    // Bonus/diag: keep their column background (already set above)
+    applyHighlight(TD, row, col);
   }
 
   function obsRenderer(hot, TD, row, col, prop, value) {
@@ -450,22 +620,84 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     TD.style.textAlign = 'center';
     TD.style.verticalAlign = 'middle';
     TD.style.background = row === summaryIdx || row === stdIdx ? '#e8ecf2' : '';
-    if (row === summaryIdx || row === stdIdx) return;
+    if (row === summaryIdx || row === stdIdx) {
+      applyHighlight(TD, row, col);
+      return;
+    }
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = value === true;
     cb.style.cssText = 'cursor:pointer;width:14px;height:14px;margin:0';
-    cb.addEventListener('change', async () => {
-      const obsColStart = 2 + N + 4; // after spacer,totaal,cijfer,spacer2
+    cb.addEventListener('mousedown', async (e) => {
+      const alreadySelected = selectedCell.row === row && selectedCell.col === col;
+
+      if (alreadySelected) {
+        // Cell is already focused: let the native click/change flow handle the toggle.
+        // Just stop HOT from interfering.
+        e.stopPropagation();
+        return;
+      }
+
+      // Cell was not yet selected: HOT's afterSelection will trigger a re-render
+      // that destroys this element before click/change can fire, so we must toggle
+      // manually here and prevent the native toggle from also firing.
+      e.stopPropagation();
+      e.preventDefault();
+
+      const obsColStart = N + 3;
       const obsIdx = col - obsColStart;
       const obs = obsArr[obsIdx];
-      if (!obs) return;
       const student = students[row];
-      if (!student) return;
-      gridData[row][col] = cb.checked;
-      await Store.setObservation(student.id, exam.id, obs.id, cb.checked, year);
+      if (!obs || !student) return;
+
+      const newChecked = !cb.checked;
+      const prevVal = cb.checked;
+
+      cb.checked = newChecked;
+      gridData[row][col] = newChecked;
+
+      pushHistory({
+        undo: async () => {
+          gridData[row][col] = prevVal;
+          await Store.setObservation(student.id, exam.id, obs.id, prevVal, year);
+          hotInstances.forEach((h) => h.render());
+        },
+        redo: async () => {
+          gridData[row][col] = newChecked;
+          await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+          hotInstances.forEach((h) => h.render());
+        },
+      });
+
+      hot.selectCell(row, col); // triggers afterSelection → render
+      await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+    });
+    cb.addEventListener('change', async () => {
+      // Handles the case where the cell was already selected (native toggle path).
+      const obsColStart = N + 3;
+      const obsIdx = col - obsColStart;
+      const obs = obsArr[obsIdx];
+      const student = students[row];
+      if (!obs || !student) return;
+      const newChecked = cb.checked;
+      const prevVal = !newChecked;
+      gridData[row][col] = newChecked;
+      pushHistory({
+        undo: async () => {
+          gridData[row][col] = prevVal;
+          await Store.setObservation(student.id, exam.id, obs.id, prevVal, year);
+          hotInstances.forEach((h) => h.render());
+        },
+        redo: async () => {
+          gridData[row][col] = newChecked;
+          await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+          hotInstances.forEach((h) => h.render());
+        },
+      });
+      await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
     });
     TD.appendChild(cb);
+    applyHighlight(TD, row, col);
   }
 
   const guard = { processing: false };
@@ -476,20 +708,21 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     rowHeaders: false,
     height: 'auto',
     licenseKey: 'non-commercial-and-evaluation',
+    // New column order: scores, spacer1, obs+spacer2, Totaal, Cijfer, spacer3, RTTI
     columns: [
       { type: 'text', readOnly: true, renderer: idRenderer, width: 72 }, // 0: #
       { type: 'text', readOnly: true, renderer: naamRenderer, width: 150 }, // 1: naam
       ...exam.questions.map(() => ({ type: 'text', renderer: scoreRenderer, width: 32 })),
-      { type: 'text', readOnly: true, width: 20 }, // spacer
-      { type: 'text', readOnly: true, renderer: calcCentered, width: 72 }, // totaal
-      { type: 'text', readOnly: true, renderer: gradeRenderer, width: 52 }, // cijfer
-      { type: 'text', readOnly: true, width: 20 }, // spacer2 (obs separator)
+      { type: 'text', readOnly: true, width: 20 }, // spacer1
       ...(O > 0
         ? [
             ...obsArr.map(() => ({ readOnly: false, renderer: obsRenderer, width: 28 })),
-            { type: 'text', readOnly: true, width: 14 }, // spacer3
+            { type: 'text', readOnly: true, width: 20 }, // spacer2
           ]
         : []),
+      { type: 'text', readOnly: true, renderer: calcCentered, width: 72 }, // Totaal
+      { type: 'text', readOnly: true, renderer: gradeRenderer, width: 52 }, // Cijfer
+      { type: 'text', readOnly: true, width: 20 }, // spacer3
       ...Array.from({ length: 4 }, () => ({
         type: 'text',
         readOnly: true,
@@ -503,20 +736,69 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       if (col >= 2 && col < 2 + N) return {};
       // Obs cols
       if (O > 0) {
-        const obsStart = 2 + N + 4; // after spacer,totaal,cijfer,spacer2
-        if (col >= obsStart && col < obsStart + O) return { readOnly: false };
+        const obsColStart = N + 3; // new layout: directly after spacer1
+        if (col >= obsColStart && col < obsColStart + O) return { readOnly: false };
       }
       return { readOnly: true };
+    },
+    enterMoves: { row: 0, col: 0 },
+    tabMoves() {
+      const sel = hot.getSelected();
+      if (!sel) return { row: 0, col: 1 };
+      const [row, col] = sel[0];
+
+      if (isQCol(col)) {
+        if (col < lastQCol) {
+          return { row: 0, col: 1 };
+        } else if (O > 0) {
+          // Last question → first obs
+          return { row: 0, col: firstObsCol - col };
+        } else {
+          // Last question, no obs → first question of next student
+          if (row < lastDataRow) {
+            return { row: 1, col: firstQCol - col };
+          } else {
+            return { row: 0, col: 0 }; // last student, stop
+          }
+        }
+      }
+
+      if (isObsCol(col)) {
+        if (col < lastObsCol) {
+          return { row: 0, col: 1 };
+        } else {
+          // Last obs → first question of next student
+          if (row < lastDataRow) {
+            return { row: 1, col: firstQCol - col };
+          } else {
+            return { row: 0, col: 0 }; // last student, stop
+          }
+        }
+      }
+
+      return { row: 0, col: 1 };
+    },
+    afterSelection(row, col) {
+      if (selectedCell.row !== row || selectedCell.col !== col) {
+        selectedCell = { row, col };
+        hot.render();
+      }
     },
     afterGetColHeader(col, TH) {
       // Bottom-align all headers
       TH.style.verticalAlign = 'bottom';
-      // Left-align Naam header; all others centered (HOT default)
+      // Left-align Naam header
       if (col === 1) TH.style.textAlign = 'left';
+      // Tint bonus/diag question headers to match cell background
+      const q = exam.questions[col - 2];
+      if (q) {
+        const kind = qKind(q);
+        if (kind === 'bonus') TH.style.background = '#cce5ff';
+        else if (kind === 'diag') TH.style.background = '#d0d6df';
+      }
     },
     afterBeginEditing() {
       // Handsontable bug: it sets aria-hidden on its own focused textarea.
-      // Remove it so screen readers and Chromium don't log a warning.
       const ta = container.querySelector('textarea.handsontableInput');
       if (ta) ta.removeAttribute('aria-hidden');
     },
@@ -524,7 +806,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       if (!changes || guard.processing) return;
       guard.processing = true;
       try {
-        for (const [row, col, , newVal] of changes) {
+        for (const [row, col, oldVal, newVal] of changes) {
           if (row === summaryIdx || row === stdIdx) continue;
           if (col < 2 || col >= 2 + N) continue;
           const student = students[row];
@@ -533,6 +815,30 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
 
           const raw = String(newVal ?? '').trim();
           const upper = raw.toUpperCase();
+          const prevRaw = oldVal;
+
+          // Snapshot for undo/redo
+          const applyScore = async (str) => {
+            const s = String(str ?? '')
+              .toUpperCase()
+              .trim();
+            gridData[row][col] = str ?? '';
+            if (!str || str === '') {
+              await Store.setScore(student.id, exam.id, q.id, undefined, year);
+            } else if (s === 'N') {
+              await Store.setScore(student.id, exam.id, q.id, null, year);
+            } else {
+              const n = Number(str);
+              await Store.setScore(student.id, exam.id, q.id, isNaN(n) ? str : n, year);
+            }
+            recomputeRow(gridData, exam, row, activeObs.length);
+            recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, activeObs.length);
+            hotInstances.forEach((h) => h.render());
+          };
+          pushHistory({
+            undo: () => applyScore(prevRaw),
+            redo: () => applyScore(newVal),
+          });
 
           if (raw === '') {
             gridData[row][col] = '';
@@ -561,7 +867,159 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
         hot.render();
       }
     },
+    beforeKeyDown(event) {
+      const sel = hot.getSelected();
+      if (!sel) return;
+      const [row, col] = sel[0];
+      if (row >= summaryIdx) return;
+      const isEditing = hot.getActiveEditor()?.isOpened?.() ?? false;
+      // Obs cells: block all printable keypresses so HOT cannot open its editor.
+      // Specific keys (0, 1, nav, Enter) are handled in the capture-phase listener
+      // and never reach this hook.
+      if (isObsCol(col) && !isEditing && event.key.length === 1) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+      }
+    },
   });
+
+  // ── Capture-phase listener ────────────────────────────────────────────────
+  // Fires before HOT's own bubble-phase handlers, so we can fully intercept
+  // keys that HOT would otherwise eat (Home, End, NumpadDecimal, Enter, etc.).
+  container.addEventListener(
+    'keydown',
+    (event) => {
+      const sel = hot.getSelected();
+      if (!sel) return;
+      const [row, col] = sel[0];
+      if (row >= summaryIdx) return;
+      const isEditing = hot.getActiveEditor()?.isOpened?.() ?? false;
+
+      // ── Numpad dot → write N directly into the question cell ───────────
+      if (event.code === 'NumpadDecimal' && !isEditing && isQCol(col)) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        hot.setDataAtCell(row, col, 'N');
+        return;
+      }
+
+      // ── Enter / Numpad Enter / multiply → confirm edit + next editable cell
+      if (
+        event.code === 'Enter' ||
+        event.code === 'NumpadEnter' ||
+        event.code === 'NumpadMultiply'
+      ) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        if (isEditing) hot.getActiveEditor().finishEditing();
+        const pos = editableCols.indexOf(col);
+        const isLastEditable = pos === editableCols.length - 1;
+        if (!isLastEditable) {
+          // Not the last editable cell: just advance right
+          goTo(row, editableCols[pos + 1]);
+        } else if (row < lastDataRow) {
+          // Last editable cell, next student exists: first empty Q or same col
+          goTo(row + 1, firstEmptyQ(row + 1) ?? col);
+        }
+        // Last editable cell of last student: stay
+        return;
+      }
+
+      // ── Numpad divide → previous editable cell ────────────────────────────
+      if (event.code === 'NumpadDivide' && !isEditing) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        const pos = editableCols.indexOf(col);
+        if (pos > 0) goTo(row, editableCols[pos - 1]);
+        return;
+      }
+
+      // ── Numpad minus → previous student (first empty Q, or same col) ─────
+      if (event.code === 'NumpadSubtract' && !isEditing) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        const targetRow = row - 1;
+        if (targetRow >= firstDataRow) {
+          goTo(targetRow, firstEmptyQ(targetRow) ?? col);
+        }
+        return;
+      }
+
+      // ── Numpad plus → next student (first empty Q, or same col) ──────────
+      if (event.code === 'NumpadAdd' && !isEditing) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        const targetRow = row + 1;
+        if (targetRow <= lastDataRow) {
+          goTo(targetRow, firstEmptyQ(targetRow) ?? col);
+        }
+        return;
+      }
+
+      // ── Home ──────────────────────────────────────────────────────────────
+      if (event.key === 'Home' && !isEditing) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        if (isQCol(col)) {
+          goTo(row, firstQCol);
+        } else if (isObsCol(col)) {
+          goTo(row, col === firstObsCol ? firstQCol : firstObsCol);
+        }
+        return;
+      }
+
+      // ── End ───────────────────────────────────────────────────────────────
+      if (event.key === 'End' && !isEditing) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        if (isQCol(col)) {
+          goTo(row, col === lastQCol && O > 0 ? lastObsCol : lastQCol);
+        } else if (isObsCol(col)) {
+          goTo(row, lastObsCol);
+        }
+        return;
+      }
+
+      // ── Obs cells: 0 unchecks, 1 checks; handled here to prevent edit mode
+      if (isObsCol(col) && !isEditing && (event.key === '0' || event.key === '1')) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        const newChecked = event.key === '1';
+        const obsIdx = col - firstObsCol;
+        const obs = obsArr[obsIdx];
+        const student = students[row];
+        if (obs && student) {
+          const prevVal = gridData[row][col] === true;
+          gridData[row][col] = newChecked;
+          pushHistory({
+            undo: async () => {
+              gridData[row][col] = prevVal;
+              await Store.setObservation(student.id, exam.id, obs.id, prevVal, year);
+              hotInstances.forEach((h) => h.render());
+            },
+            redo: async () => {
+              gridData[row][col] = newChecked;
+              await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+              hotInstances.forEach((h) => h.render());
+            },
+          });
+          Store.setObservation(student.id, exam.id, obs.id, newChecked, year).then(() =>
+            hot.render()
+          );
+        }
+        // Advance: next obs → next obs, last obs + not last student → next row first Q,
+        // last obs + last student → stay (nothing to advance to)
+        // if (col < lastObsCol) {
+        //   goTo(row, col + 1);
+        // } else if (row < lastDataRow) {
+        //   goTo(row + 1, firstQCol);
+        // }
+        // else: last obs of last student — value is saved above, cursor stays
+        return;
+      }
+    },
+    true // capture phase
+  );
 
   return hot;
 }

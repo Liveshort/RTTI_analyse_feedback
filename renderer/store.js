@@ -20,6 +20,11 @@
  * Subject field inside each JSON file is authoritative (not derived from path).
  */
 
+/** Returns the kind of a question: 'normal' | 'bonus' | 'diag'. Absence means 'normal'. */
+function qKind(q) {
+  return q.kind ?? 'normal';
+}
+
 const Store = (() => {
   // ── Cache ─────────────────────────────────────────────────────────────────
   // Exam/group/obs entries keyed as: `${year}/exams/${subject}`, `obs/${subject}`, etc.
@@ -66,6 +71,25 @@ const Store = (() => {
     schk: 'Scheikunde',
     wi: 'Wiskunde',
   };
+
+  // Wiskunde sub-variants: wisob = onderbouw (jn 1-3), wisa/b/c/d = bovenbouw (jn 4-6)
+  const WI_VARIANTS = new Set(['wisob', 'wisa', 'wisb', 'wisc', 'wisd']);
+
+  function obsMatchesSubject(obs, subject) {
+    const subjectsArr = Array.isArray(obs.subjects)
+      ? obs.subjects
+      : obs.subject
+        ? [obs.subject]
+        : [];
+    if (subject === 'wi') return subjectsArr.some((s) => WI_VARIANTS.has(s));
+    return subjectsArr.includes(subject);
+  }
+
+  function invalidateObsCache() {
+    for (const key of Object.keys(cache)) {
+      if (key.startsWith('obs/')) delete cache[key];
+    }
+  }
 
   function subjectFromGroupName(name) {
     const n = (name ?? '').toLowerCase();
@@ -135,7 +159,7 @@ const Store = (() => {
     const key = `obs/${subject}`;
     if (cache[key] !== undefined) return cache[key];
     const all = await window.rtti.readAllJson('observaties');
-    cache[key] = all.filter((o) => o.subject === subject);
+    cache[key] = all.filter((o) => obsMatchesSubject(o, subject));
     return cache[key];
   }
 
@@ -417,34 +441,61 @@ const Store = (() => {
   // ── RTTI calculations ─────────────────────────────────────────────────────
   function calcResults(exam, questionScores) {
     const n = exam.n_term ?? 1;
-    const examMaxTotal = exam.questions.reduce((s, q) => s + q.max_points, 0);
+    const normalMax = exam.questions
+      .filter((q) => qKind(q) === 'normal')
+      .reduce((s, q) => s + q.max_points, 0);
+    const bonusMax = exam.questions
+      .filter((q) => qKind(q) === 'bonus')
+      .reduce((s, q) => s + q.max_points, 0);
+    const examMaxTotal = normalMax + bonusMax;
+
     let scored = 0;
     const cats = { R: [0, 0], T1: [0, 0], T2: [0, 0], I: [0, 0] };
-    let anyEntered = false;
+    let anyGradeableEntered = false;
 
     for (const q of exam.questions) {
       const raw = questionScores[q.id];
       if (raw === undefined) continue;
-      anyEntered = true;
+      const kind = qKind(q);
       const isN = raw === null || String(raw).toUpperCase() === 'N';
       if (!isN) {
         const num = Number(raw);
         if (isNaN(num) || num < 0 || num > q.max_points) {
-          cats[q.rtti][1] += q.max_points;
+          if (kind === 'normal') cats[q.rtti][1] += q.max_points;
           continue;
         }
-        scored += num;
-        cats[q.rtti][0] += num;
-        cats[q.rtti][1] += q.max_points;
+        if (kind === 'diag') continue; // diag scores don't affect grade or RTTI
+        anyGradeableEntered = true;
+        scored += num; // normal and bonus both count towards scored
+        if (kind === 'normal') {
+          cats[q.rtti][0] += num;
+          cats[q.rtti][1] += q.max_points;
+        }
       } else {
-        cats[q.rtti][1] += q.max_points;
+        if (kind === 'normal') cats[q.rtti][1] += q.max_points;
+        if (kind !== 'diag') anyGradeableEntered = true;
       }
     }
 
-    const grade = anyEntered && examMaxTotal > 0 ? calcGrade(scored, examMaxTotal, n) : null;
+    let grade = null;
+    if (anyGradeableEntered && normalMax > 0) {
+      grade = scored >= normalMax ? 10 : calcGrade(scored, normalMax, n);
+    }
+
     const pct = (cat) =>
       cats[cat][1] > 0 ? Math.round((cats[cat][0] / cats[cat][1]) * 100) : 'NVT';
-    return { scored, examMaxTotal, grade, R: pct('R'), T1: pct('T1'), T2: pct('T2'), I: pct('I') };
+    return {
+      scored,
+      normalMax,
+      bonusMax,
+      examMaxTotal,
+      hasBonus: bonusMax > 0,
+      grade,
+      R: pct('R'),
+      T1: pct('T1'),
+      T2: pct('T2'),
+      I: pct('I'),
+    };
   }
 
   function calcGrade(scored, max, nTerm) {
@@ -486,18 +537,27 @@ const Store = (() => {
   }
 
   async function upsertObservation(obs, subject = _activeSubject) {
-    const updated = { ...obs, subject };
+    const subjects =
+      Array.isArray(obs.subjects) && obs.subjects.length > 0
+        ? obs.subjects
+        : obs.subject
+          ? [obs.subject]
+          : [subject];
+    const updated = { ...obs, subjects };
+    delete updated.subject;
     await window.rtti.writeJson(ypObs(updated.id), updated);
+    invalidateObsCache();
     const key = `obs/${subject}`;
     const arr = cache[key] ?? [];
     const i = arr.findIndex((o) => o.id === updated.id);
     if (i >= 0) arr[i] = updated;
-    else arr.push(updated);
+    else if (obsMatchesSubject(updated, subject)) arr.push(updated);
     cache[key] = arr;
   }
 
   async function deleteObservation(id, subject = _activeSubject) {
     await window.rtti.deleteFile(ypObs(id));
+    invalidateObsCache();
     const key = `obs/${subject}`;
     cache[key] = (cache[key] ?? []).filter((o) => o.id !== id);
   }

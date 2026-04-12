@@ -36,7 +36,9 @@ export function renderToetsen() {
 
 export async function computeExamStats(year, exam) {
   const students = Store.getStudentsSync(year);
-  const examMaxTotal = exam.questions.reduce((s, q) => s + q.max_points, 0);
+  const normalMax = exam.questions
+    .filter((q) => qKind(q) === 'normal')
+    .reduce((s, q) => s + q.max_points, 0);
   const grades = [],
     points = [];
   for (const s of students) {
@@ -67,7 +69,7 @@ export async function computeExamStats(year, exam) {
     avgG: mg.toFixed(1).replace('.', ','),
     sd: sd(grades, mg).toFixed(1).replace('.', ','),
     fails: Math.round((grades.filter((g) => g < 5.5).length / grades.length) * 100),
-    examMaxTotal,
+    normalMax,
   };
 }
 
@@ -132,12 +134,30 @@ export async function renderToetsenList() {
   function rttiLine(e) {
     const cats = ['R', 'T1', 'T2', 'I']
       .map((c) => {
-        const pts = e.questions.reduce((s, q) => (q.rtti === c ? s + q.max_points : s), 0);
+        const pts = e.questions
+          .filter((q) => qKind(q) === 'normal' && q.rtti === c)
+          .reduce((s, q) => s + q.max_points, 0);
         return pts > 0 ? `${c}: ${pts}p` : null;
       })
       .filter(Boolean)
       .join(' · ');
     return cats;
+  }
+
+  function ptsTotalDisplay(e) {
+    const normalTotal = e.questions
+      .filter((q) => qKind(q) === 'normal')
+      .reduce((s, q) => s + q.max_points, 0);
+    const bonusTotal = e.questions
+      .filter((q) => qKind(q) === 'bonus')
+      .reduce((s, q) => s + q.max_points, 0);
+    return bonusTotal > 0 ? `${normalTotal}p (+${bonusTotal}p bonus)` : `${normalTotal}p`;
+  }
+
+  function examSummaryLine(e) {
+    const t = ptsTotalDisplay(e);
+    const r = rttiLine(e);
+    return r ? `${t} · ${r}` : t;
   }
 
   function statsSpanHtml(examId, isBest = false) {
@@ -163,12 +183,11 @@ export async function renderToetsenList() {
   }
 
   function attemptCardHtml(e) {
-    const rtti = rttiLine(e);
     return `
       <div class="card exam-attempt-card">
         <div class="card-main">
           <strong><span class="volgnummer" style="background:${typeColor(e)}">${escHtml(attemptBadge(e))}</span> <button class="student-name-btn exam-title-link" data-action="exam-overview" data-examid="${escHtml(e.id)}">${escHtml(e.title)}</button></strong>
-          ${rtti ? `<span class="rtti-summary">${rtti}</span>` : ''}
+          <span class="rtti-summary">${examSummaryLine(e)}</span>
           ${statsSpanHtml(e.id)}
         </div>
         <div class="card-actions">
@@ -199,7 +218,7 @@ export async function renderToetsenList() {
           <div class="card-main">
             <strong>${e.volgnummer ? `<span class="volgnummer" style="background:${typeColor(e)}">${e.volgnummer}</span> ` : ''}<button class="student-name-btn exam-title-link" data-action="exam-overview" data-examid="${escHtml(e.id)}">${escHtml(e.title)}</button></strong>
             <span class="muted">${metaLine(e)}</span>
-            <span class="rtti-summary">${rttiLine(e)}</span>
+            <span class="rtti-summary">${examSummaryLine(e)}</span>
             ${statsSpanHtml(e.id)}
           </div>
           <div class="card-actions">
@@ -1899,8 +1918,9 @@ export function showExamEditor(
       <table class="questions-table">
         <thead><tr>
           <th style="width:270px">Opgave</th>
-          <th style="width:60px">Vraag</th>
-          <th style="width:290px">Max punten</th>
+          <th style="width:50px">Vr.</th>
+          <th style="width:270px">Max punten</th>
+          <th style="width:90px">B / D</th>
           <th>RTTI</th>
           <th style="width:36px"></th>
         </tr></thead>
@@ -1992,6 +2012,13 @@ export function showExamEditor(
               </div>
             </td>
             <td>
+              <select class="kind-sel" data-qi="${i}" style="font-size:12px;padding:2px 4px;width:80px">
+                <option value="normal"${(q.kind ?? 'normal') === 'normal' ? ' selected' : ''}>Normaal</option>
+                <option value="bonus"${q.kind === 'bonus' ? ' selected' : ''}>Bonus</option>
+                <option value="diag"${q.kind === 'diag' ? ' selected' : ''}>Diag.</option>
+              </select>
+            </td>
+            <td>
               <div class="btn-toggle-group">
                 ${['R', 'T1', 'T2', 'I']
                   .map(
@@ -2039,6 +2066,13 @@ export function showExamEditor(
           boundaries.splice(i, 1);
           if (boundaries.length > 0) boundaries[0] = 1;
           renderQRows();
+        }
+      });
+
+      tbody.addEventListener('change', (e) => {
+        if (e.target.matches('.kind-sel')) {
+          const i = Number(e.target.dataset.qi);
+          exam.questions[i].kind = e.target.value;
         }
       });
 

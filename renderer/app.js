@@ -21,7 +21,7 @@ document.querySelectorAll('.screen').forEach((el) => {
 document.querySelectorAll('.nav-btn').forEach((btn) => {
   btn.addEventListener('click', () => navigateTo(btn.dataset.screen));
 });
-
+``;
 export function navigateTo(name) {
   document
     .querySelectorAll('.nav-btn')

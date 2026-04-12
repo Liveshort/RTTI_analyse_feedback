@@ -151,15 +151,29 @@
         str(int(q.score)) + " / " + str(q.max)
       }
       let avg_str = fmt1(q.class_avg) + " / " + str(q.max) + " (" + str(q.class_pct) + "%)"
+      let is_special = q.kind == "bonus" or q.kind == "diag"
+      let muted = rgb("#9aa0ab")
+      let bd_label = if q.kind == "bonus" { "Bonus" } else if q.kind == "diag" { "Diag." } else { "" }
 
-      (
-        [#q.label],
-        [#q.rtti],
-        [],
-        [#score_str],
-        lollipop_track(q, global_max),
-        [#avg_str],
-      )
+      if is_special {
+        (
+          text(fill: muted, style: "italic")[#q.label],
+          text(fill: muted, style: "italic")[#q.rtti],
+          text(fill: muted, style: "italic")[#bd_label],
+          text(fill: muted, style: "italic")[#score_str],
+          lollipop_track(q, global_max),
+          text(fill: muted, style: "italic")[#avg_str],
+        )
+      } else {
+        (
+          [#q.label],
+          [#q.rtti],
+          [],
+          [#score_str],
+          lollipop_track(q, global_max),
+          [#avg_str],
+        )
+      }
     }).flatten()
   )
 }
@@ -200,6 +214,7 @@
   let t2_s = 0.0; let t2_m = 0.0
   let i_s = 0.0;  let i_m = 0.0
   for q in vragen {
+    if q.kind != "normal" { continue }
     let sc = if q.score == none { 0.0 } else { float(q.score) }
     let mx = float(q.max)
     if q.rtti == "R"  { r_s  += sc; r_m  += mx }
@@ -230,7 +245,7 @@
       rect((0, 0), (8, 5.5), stroke: none, fill: none)
 
       let cx = 2.7
-      let cy = 3.0
+      let cy = 2.9
       let r  = 2.2
       let angle = 90deg
 
@@ -258,7 +273,7 @@
       circle((cx, cy), radius: r, fill: none, stroke: (paint: gray.lighten(30%), thickness: 0.4pt))
 
       // Legend: colored swatch + "Cat (XX%)"
-      let ly = 4.0
+      let ly = 3.8
       for t in totals {
         let (cat, color, fill, scored, maxpts) = t
         if maxpts <= 0.0 { continue }
