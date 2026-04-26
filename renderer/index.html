@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net;"
+      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:;"
     />
     <title>Maatwerk</title>
     <link
@@ -22,15 +22,16 @@
         <button class="nav-btn" data-screen="toetsen">Toetsen</button>
         <button class="nav-btn" data-screen="observaties">Observaties</button>
         <button class="nav-btn" data-screen="rapport">Rapport genereren</button>
+        <button class="nav-btn hidden" data-screen="gebruikers">Gebruikers</button>
+        <button class="nav-btn hidden" data-screen="school">School</button>
       </nav>
-      <div id="wi-filter-bar" class="wi-filter-bar hidden">
-        <button class="tog-btn wi-filter-btn selected" data-wi-filter="OB">OB</button>
-        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisA">WisA</button>
-        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisB">WisB</button>
-        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisC">WisC</button>
-        <button class="tog-btn wi-filter-btn selected" data-wi-filter="WisD">WisD</button>
-      </div>
-      <button id="subject-label" class="subject-badge hidden">—</button>
+      <button
+        id="user-badge-btn"
+        class="user-badge-mini badge-circle hidden"
+        style="--badge-color: #888"
+      >
+        —
+      </button>
     </header>
 
     <main id="app">
@@ -39,14 +40,93 @@
 
       <!-- Leerlingen -->
       <section id="screen-leerlingen" class="screen">
-        <div class="screen-header">
+        <div class="screen-header" style="height: 32px">
           <h2>Leerlingen</h2>
           <div class="header-actions">
-            <label class="toolbar-inline-label">Schooljaar:</label>
-            <div id="student-year-select" class="csel-host"></div>
-            <input id="student-search" type="search" placeholder="Zoeken…" class="search-input" />
             <button class="btn-secondary" id="btn-import-students">&#8593; CSV importeren</button>
             <button class="btn-primary" id="btn-add-student">+ Leerling toevoegen</button>
+            <input id="student-search" type="search" placeholder="Zoeken…" class="search-input" />
+            <label class="toolbar-inline-label">Schooljaar:</label>
+            <div id="student-year-select" class="csel-host"></div>
+          </div>
+        </div>
+        <div class="filter-row" id="filter-row-leerlingen">
+          <!-- #filter-bar lives here initially and is moved between screens on navigation -->
+          <div id="filter-bar" class="filter-bar">
+            <!-- Admin-only: vakken selector -->
+            <div class="filter-popover-wrap hidden" id="admin-vak-wrap">
+              <button id="btn-filter-vak" class="filter-btn">
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
+                  <path d="M1 2h10L7.5 6.5V11l-3-1.5V6.5L1 2z" />
+                </svg>
+                <span class="filter-btn-label" id="lbl-filter-vak">Alle vakken</span>
+              </button>
+              <div id="pop-vak" class="filter-popover hidden">
+                <div id="pop-vak-toggles"></div>
+                <hr />
+                <div class="filter-popover-actions">
+                  <button class="filter-pop-alles" id="pop-vak-alles">Alles</button>
+                </div>
+              </div>
+            </div>
+            <!-- Schoolsoort filter -->
+            <div class="filter-popover-wrap">
+              <button id="btn-filter-ss" class="filter-btn">
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
+                  <path d="M1 2h10L7.5 6.5V11l-3-1.5V6.5L1 2z" />
+                </svg>
+                <span class="filter-btn-label" id="lbl-filter-ss">Alle schoolsoorten</span>
+              </button>
+              <div id="pop-ss" class="filter-popover hidden">
+                <div id="pop-ss-toggles"></div>
+                <hr />
+                <div class="filter-popover-actions">
+                  <button class="filter-pop-alles" id="pop-ss-alles">Alles</button>
+                  <button class="filter-pop-niets" id="pop-ss-niets">Niets</button>
+                </div>
+              </div>
+            </div>
+            <!-- Jaarlaag klas filter (wiskunde only) -->
+            <div class="filter-popover-wrap hidden" id="jl-klas-wrap">
+              <button id="btn-filter-jl-klas" class="filter-btn">
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
+                  <path d="M1 2h10L7.5 6.5V11l-3-1.5V6.5L1 2z" />
+                </svg>
+                <span class="filter-btn-label" id="lbl-filter-jl-klas">Alle jaarlagen</span>
+              </button>
+              <div id="pop-jl-klas" class="filter-popover hidden">
+                <div id="pop-jl-klas-toggles"></div>
+                <hr />
+                <div class="filter-popover-actions">
+                  <button class="filter-pop-alles" id="pop-jl-klas-alles">Alles</button>
+                  <button class="filter-pop-niets" id="pop-jl-klas-niets">Niets</button>
+                </div>
+              </div>
+            </div>
+            <!-- Jaarlaag filter -->
+            <div class="filter-popover-wrap">
+              <button id="btn-filter-jl" class="filter-btn">
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
+                  <path d="M1 2h10L7.5 6.5V11l-3-1.5V6.5L1 2z" />
+                </svg>
+                <span class="filter-btn-label" id="lbl-filter-jl">Alle jaarlagen</span>
+              </button>
+              <div id="pop-jl" class="filter-popover hidden">
+                <div id="pop-jl-toggles"></div>
+                <hr />
+                <div class="filter-popover-actions">
+                  <button class="filter-pop-alles" id="pop-jl-alles">Alles</button>
+                  <button class="filter-pop-niets" id="pop-jl-niets">Niets</button>
+                </div>
+              </div>
+            </div>
+            <!-- Eigen/Alle toggle (teacher only) -->
+            <button id="btn-filter-eigen" class="filter-btn hidden">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
+                <path d="M1 2h10L7.5 6.5V11l-3-1.5V6.5L1 2z" />
+              </svg>
+              <span class="filter-btn-label" id="lbl-filter-eigen">Alle leerlingen</span>
+            </button>
           </div>
         </div>
         <div id="student-list" class="card-list"></div>
@@ -54,50 +134,63 @@
 
       <!-- Groepen -->
       <section id="screen-groepen" class="screen">
-        <div class="screen-header">
+        <div class="screen-header" style="height: 32px">
           <h2>Groepen</h2>
           <div class="header-actions">
-            <label class="toolbar-inline-label">Schooljaar:</label>
-            <div id="groups-year-select" class="csel-host"></div>
             <button class="btn-secondary" id="btn-import-groups">&#8593; CSV importeren</button>
             <button class="btn-primary" id="btn-add-group">+ Groep toevoegen</button>
+            <label class="toolbar-inline-label">Schooljaar:</label>
+            <div id="groups-year-select" class="csel-host"></div>
           </div>
         </div>
+        <div class="filter-row" id="filter-row-groepen"></div>
         <div id="group-list" class="card-list"></div>
       </section>
 
       <!-- Toetsen -->
       <section id="screen-toetsen" class="screen">
-        <div class="screen-header">
+        <div class="screen-header" style="height: 32px">
           <h2>Toetsen</h2>
           <div class="header-actions">
+            <button class="btn-primary" id="btn-add-exam">+ Toets toevoegen</button>
             <label class="toolbar-inline-label">Schooljaar:</label>
             <div id="toetsen-year-select" class="csel-host"></div>
-            <button class="btn-primary" id="btn-add-exam">+ Toets toevoegen</button>
           </div>
         </div>
+        <div class="filter-row" id="filter-row-toetsen"></div>
         <div id="exam-list" class="card-list"></div>
       </section>
 
       <!-- Observaties -->
       <section id="screen-observaties" class="screen">
-        <div class="screen-header">
+        <div class="screen-header" style="height: 32px">
           <h2>Observaties</h2>
           <div class="header-actions">
             <button class="btn-primary" id="btn-add-obs">+ Observatie toevoegen</button>
           </div>
         </div>
+        <div class="filter-row" id="filter-row-observaties"></div>
         <div id="obs-list" class="card-list"></div>
       </section>
 
+      <!-- Gebruikers (admin only) -->
+      <section id="screen-gebruikers" class="screen"></section>
+
+      <!-- School (admin only) -->
+      <section id="screen-school" class="screen"></section>
+
       <!-- Rapport -->
       <section id="screen-rapport" class="screen">
-        <div class="screen-header"><h2>Rapport genereren</h2></div>
+        <div class="screen-header" style="height: 32px"><h2>Rapport genereren</h2></div>
         <div class="toolbar">
           <span class="toolbar-label">Jaarlaag:</span>
           <div id="rapport-jaarlaag-select" class="csel-host"></div>
           <span class="toolbar-label">Toets:</span>
           <div id="rapport-exam-select" class="csel-host" style="width: 250px"></div>
+          <span class="toolbar-spacer"></span>
+          <button id="btn-rtti-uitleg" class="btn btn-secondary" style="white-space: nowrap">
+            RTTI uitleg / leeradvies
+          </button>
         </div>
         <div id="rapport-content"><p class="hint">Selecteer een jaarlaag en een toets.</p></div>
       </section>

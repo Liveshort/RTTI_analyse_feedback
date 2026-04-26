@@ -28,6 +28,14 @@ contextBridge.exposeInMainWorld('rtti', {
   // Absolute path to the data directory (for display/debugging).
   getDataDir: () => ipcRenderer.invoke('fs:getDataDir'),
 
+  // Local session state (machine-local, not synced via OneDrive).
+  readLocalSession: () => ipcRenderer.invoke('fs:readLocalSession'),
+  writeLocalSession: (data) => ipcRenderer.invoke('fs:writeLocalSession', data),
+
+  // User profile photos (stored in data/fotos/).
+  readPhotoAsDataUrl: (relPath) => ipcRenderer.invoke('fs:readPhotoAsDataUrl', relPath),
+  savePhoto: (relPath, base64Data) => ipcRenderer.invoke('fs:savePhoto', relPath, base64Data),
+
   // Typst compiler — returns { success, version } or { success: false, error }
   typstVersion: () => ipcRenderer.invoke('typst:version'),
 

@@ -7,7 +7,11 @@ import {
   escHtml,
   formatGrade,
   SEL,
-  getWiFilter,
+  getSchoolsoortFilter,
+  getJaarlagFilter,
+  getJaarlagKlasFilter,
+  getEigenOnly,
+  getAdminSubjectFilter,
   pushModalChart,
 } from '../app.js';
 import { openScoreModal } from './scores.js';
@@ -73,6 +77,30 @@ export async function computeExamStats(year, exam) {
   };
 }
 
+export async function computeExamWarnings(year, exam) {
+  const students = Store.getStudentsSync(year);
+  const problems = [];
+  for (const s of students) {
+    const rec = await Store.getStudentScores(s.id, year);
+    const examScores = rec?.scores?.[exam.id];
+    if (!examScores || Object.keys(examScores).length === 0) continue;
+    let filled = 0,
+      invalid = false;
+    for (const q of exam.questions) {
+      const v = examScores[q.id];
+      if (v === undefined) continue; // not entered
+      filled++;
+      if (v === null) continue; // 'N' — valid
+      const num = Number(v);
+      if (isNaN(num) || num < 0 || num > q.max_points) invalid = true;
+    }
+    if (invalid) problems.push({ name: Store.fullName(s), issue: 'ongeldig' });
+    else if (filled > 0 && filled < exam.questions.length)
+      problems.push({ name: Store.fullName(s), issue: 'onvolledig' });
+  }
+  return problems.length > 0 ? problems : null;
+}
+
 export async function computeBestGradeStats(parentId, year) {
   const bestMap = await Store.computeBestGradeMap(parentId, year);
   const grades = Object.values(bestMap)
@@ -102,12 +130,44 @@ export async function renderToetsenList() {
   let exams = Store.getExamsSync(year);
   const container = document.getElementById('exam-list');
 
-  if (Store.getActiveSubject() === 'wi') {
-    const wiFilter = getWiFilter();
+  const activeSubject = Store.isAdminActive() ? getAdminSubjectFilter() : Store.getActiveSubject();
+  const schoolsoortFilter = getSchoolsoortFilter();
+  const jaarlagFilter = getJaarlagFilter();
+  const jaarlagKlasFilter = getJaarlagKlasFilter();
+  const eigenOnly = getEigenOnly();
+  const activeUser = Store.getActiveUser();
+
+  // Schoolsoort filter — always applied; exams without schoolsoort always pass
+  exams = exams.filter(
+    (e) =>
+      !(e.schoolsoort ?? []).length || (e.schoolsoort ?? []).some((ss) => schoolsoortFilter.has(ss))
+  );
+
+  // Jaarlaag filter
+  if (activeSubject === 'wi') {
+    // Klas 1-6 filter (by numeric jaarlaag)
+    exams = exams.filter((e) => jaarlagKlasFilter.has(String(e.jaarlaag ?? '')));
+    // Subcategory filter (OB / WisA / WisB / WisC / WisD)
     exams = exams.filter((e) => {
       const filterKey = SUBCATEGORY_TO_FILTER[e.subcategory ?? ''];
-      return filterKey ? wiFilter.has(filterKey) : true;
+      return filterKey ? jaarlagFilter.has(filterKey) : true;
     });
+  } else {
+    exams = exams.filter((e) => jaarlagFilter.has(String(e.jaarlaag ?? '')));
+  }
+
+  // Eigen filter: exam overlaps with at least one of teacher's groups
+  if (eigenOnly && activeUser && !Store.isAdminActive()) {
+    const myGroups = Store.getGroupsSync(year).filter((g) =>
+      (g.docenten ?? []).includes(activeUser.id)
+    );
+    exams = exams.filter((e) =>
+      myGroups.some(
+        (g) =>
+          String(g.jaarlaag) === String(e.jaarlaag) &&
+          (g.schoolsoort ?? []).some((ss) => (e.schoolsoort ?? []).includes(ss))
+      )
+    );
   }
 
   exams.sort(
@@ -164,12 +224,28 @@ export async function renderToetsenList() {
     return `<span class="exam-stats muted" data-examid="${escHtml(examId)}"${isBest ? ' data-best-stats="1"' : ''} style="display:none"></span>`;
   }
 
+  function warningSpanHtml(examId) {
+    return `<span class="exam-warning" data-examid="${escHtml(examId)}" style="display:none" aria-label="Waarschuwing">⚠</span>`;
+  }
+
   function metaLine(e) {
-    return `${e.periode ? 'Periode ' + escHtml(String(e.periode)) + ' · ' : ''}N-term: ${String(e.n_term).replace('.', ',')} · Weging: ${String(e.weging ?? 1).replace('.', ',')}${e.type === 'pta' ? ` · Weging SE: ${String(e.weging_se ?? e.weging ?? 1).replace('.', ',')}` : ''}`;
+    const ss = (e.schoolsoort ?? []).join(' / ');
+    const ssPrefix = ss ? escHtml(ss) + ' · ' : '';
+    return `${ssPrefix}${e.periode ? 'Periode ' + escHtml(String(e.periode)) + ' · ' : ''}N-term: ${String(e.n_term).replace('.', ',')} · Weging: ${String(e.weging ?? 1).replace('.', ',')}${e.type === 'pta' ? ` · Weging SE: ${String(e.weging_se ?? e.weging ?? 1).replace('.', ',')}` : ''}`;
   }
 
   function typeColor(e) {
     return e?.type === 'pta' ? '#d9534f' : e?.type === 'po' ? '#f0ad4e' : '#4A90D9';
+  }
+
+  const SUBCATEGORY_LETTER = { wisa: 'A', wisb: 'B', wisc: 'C', wisd: 'D' };
+  function wiSubBadge(e) {
+    if (e.subject !== 'wi') return '';
+    const letter = SUBCATEGORY_LETTER[e.subcategory];
+    if (!letter) return '';
+    const jl = parseInt(e.jaarlaag, 10);
+    if (jl < 4) return '';
+    return `<span class="volgnummer" style="background:#111;margin-right:0">${letter}</span> `;
   }
 
   function attemptBadge(e) {
@@ -186,7 +262,7 @@ export async function renderToetsenList() {
     return `
       <div class="card exam-attempt-card">
         <div class="card-main">
-          <strong><span class="volgnummer" style="background:${typeColor(e)}">${escHtml(attemptBadge(e))}</span> <button class="student-name-btn exam-title-link" data-action="exam-overview" data-examid="${escHtml(e.id)}">${escHtml(e.title)}</button></strong>
+          <strong>${wiSubBadge(e)}<span class="volgnummer" style="background:${typeColor(e)}">${escHtml(attemptBadge(e))}</span> <button class="student-name-btn exam-title-link" style="vertical-align:middle" data-action="exam-overview" data-examid="${escHtml(e.id)}">${escHtml(e.title)}</button>${warningSpanHtml(e.id)}</strong>
           <span class="rtti-summary">${examSummaryLine(e)}</span>
           ${statsSpanHtml(e.id)}
         </div>
@@ -216,7 +292,7 @@ export async function renderToetsenList() {
       html += `
         <div class="card">
           <div class="card-main">
-            <strong>${e.volgnummer ? `<span class="volgnummer" style="background:${typeColor(e)}">${e.volgnummer}</span> ` : ''}<button class="student-name-btn exam-title-link" data-action="exam-overview" data-examid="${escHtml(e.id)}">${escHtml(e.title)}</button></strong>
+            <strong>${wiSubBadge(e)}${e.volgnummer ? `<span class="volgnummer" style="background:${typeColor(e)}">${e.volgnummer}</span> ` : ''}<button class="student-name-btn exam-title-link" style="vertical-align:middle" data-action="exam-overview" data-examid="${escHtml(e.id)}">${escHtml(e.title)}</button>${warningSpanHtml(e.id)}</strong>
             <span class="muted">${metaLine(e)}</span>
             <span class="rtti-summary">${examSummaryLine(e)}</span>
             ${statsSpanHtml(e.id)}
@@ -236,7 +312,7 @@ export async function renderToetsenList() {
       html += `
         <div class="card exam-summary-card">
           <div class="card-main">
-            <strong>${e.volgnummer ? `<span class="volgnummer" style="background:${typeColor(e)}">${e.volgnummer}</span> ` : ''}<button class="student-name-btn exam-title-link" data-action="exam-overview-best" data-parentid="${escHtml(e.id)}">${escHtml(e.title)}</button></strong>
+            <strong>${wiSubBadge(e)}${e.volgnummer ? `<span class="volgnummer" style="background:${typeColor(e)}">${e.volgnummer}</span> ` : ''}<button class="student-name-btn exam-title-link" style="vertical-align:middle" data-action="exam-overview-best" data-parentid="${escHtml(e.id)}">${escHtml(e.title)}</button>${warningSpanHtml(e.id)}</strong>
             <span class="muted">${metaLine(e)}</span>
             ${statsSpanHtml(e.id, true)}
           </div>
@@ -332,6 +408,36 @@ export async function renderToetsenList() {
           `.exam-attempt-card .exam-stats[data-examid="${CSS.escape(attempt.id)}"]`
         );
         if (statsEl) computeExamStats(year, attempt).then((st) => applyStats(statsEl, st));
+      }
+    }
+  }
+
+  // ── Fill warning icons asynchronously ─────────────────────────────────────
+  function applyWarning(el, problems) {
+    if (!problems || problems.length === 0) {
+      el.remove();
+      return;
+    }
+    el.title = problems
+      .map(
+        (p) =>
+          `${p.name} \u2014 ${p.issue === 'ongeldig' ? 'ongeldige score' : 'onvolledige scores'}`
+      )
+      .join('\n');
+    el.style.display = 'inline';
+  }
+
+  for (const e of originals) {
+    const resits = resitsByParent[e.id] ?? [];
+    if (resits.length === 0) {
+      const warnEl = container.querySelector(`.exam-warning[data-examid="${CSS.escape(e.id)}"]`);
+      if (warnEl) computeExamWarnings(year, e).then((p) => applyWarning(warnEl, p));
+    } else {
+      for (const attempt of [e, ...resits]) {
+        const warnEl = container.querySelector(
+          `.exam-attempt-card .exam-warning[data-examid="${CSS.escape(attempt.id)}"]`
+        );
+        if (warnEl) computeExamWarnings(year, attempt).then((p) => applyWarning(warnEl, p));
       }
     }
   }
@@ -1517,6 +1623,8 @@ export async function openExamModal(existingId, afterSave = null) {
   await Store.loadYear(toetsYear);
 
   const isWi = Store.getActiveSubject() === 'wi';
+  const schoolSS = Store.getSchoolSync().schoolsoort ?? [];
+  const schoolSSFilter = schoolSS.length > 0;
 
   if (!existingId) {
     showModal(
@@ -1537,10 +1645,21 @@ export async function openExamModal(existingId, afterSave = null) {
           <div id="f-exam-year-label" style="height:30px;display:flex;align-items:center;font-size:13px;color:var(--muted);font-style:italic"></div>
         </div>
       </div>
-      ${
-        isWi
-          ? `
       <div class="form-row" style="align-items:flex-end;gap:20px;margin-top:10px">
+        <div class="form-group" style="flex:none;margin-bottom:0">
+          <label>Schoolsoort</label>
+          <div class="btn-toggle-group">
+            ${['Vmbo-bb', 'Vmbo-kb', 'Vmbo-gl', 'Vmbo-tl', 'Havo', 'Vwo', 'Gymnasium']
+              .map((ss) => {
+                const dis = schoolSSFilter && !schoolSS.includes(ss);
+                return `<button class="tog-btn ss-btn${dis ? ' tog-btn-disabled' : ''}" data-ss="${ss}"${dis ? ' disabled' : ''}>${ss}</button>`;
+              })
+              .join('')}
+          </div>
+        </div>
+        ${
+          isWi
+            ? `
         <div class="form-group" style="flex:none;margin-bottom:0">
           <label>Subcategorie</label>
           <div class="btn-toggle-group">
@@ -1549,10 +1668,10 @@ export async function openExamModal(existingId, afterSave = null) {
             <button class="tog-btn sub-btn" data-sub="wisc">C</button>
             <button class="tog-btn sub-btn" data-sub="wisd">D</button>
           </div>
-        </div>
-      </div>`
-          : ''
-      }
+        </div>`
+            : ''
+        }
+      </div>
       <div class="form-row" style="align-items:flex-end;gap:20px;margin-top:10px">
         <div class="form-group" style="flex:2;margin-bottom:0">
           <label>Jaarlaag</label>
@@ -1627,6 +1746,13 @@ export async function openExamModal(existingId, afterSave = null) {
           syncWegingSE();
         });
 
+        // Schoolsoort multi-select
+        el.querySelectorAll('.ss-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            btn.classList.toggle('selected');
+          });
+        });
+
         // Jaarlaag + subcategory interlock for wiskunde
         const jlBtns = el.querySelectorAll('.jl-btn');
         const subBtns = el.querySelectorAll('.sub-btn');
@@ -1696,6 +1822,7 @@ export async function openExamModal(existingId, afterSave = null) {
           const jlBtn = el.querySelector('.jl-btn.selected');
           const jaarlaag = jlBtn ? jlBtn.dataset.jl : '';
           const subBtn = el.querySelector('.sub-btn.selected');
+          const schoolsoort = [...el.querySelectorAll('.ss-btn.selected')].map((b) => b.dataset.ss);
           const structureMode = structSel.getValue() || 'roman';
           const nterm = spinnerValue(el.querySelector('#f-enterm'));
           const weging = spinnerValue(el.querySelector('#f-eweging'));
@@ -1705,6 +1832,10 @@ export async function openExamModal(existingId, afterSave = null) {
           const count = Math.round(spinnerValue(el.querySelector('#f-enum')));
           if (!title || isNaN(nterm) || count < 1) {
             toast('Vul alle velden in.', 'error');
+            return;
+          }
+          if (schoolsoort.length === 0) {
+            toast('Selecteer minimaal één schoolsoort.', 'error');
             return;
           }
 
@@ -1727,6 +1858,7 @@ export async function openExamModal(existingId, afterSave = null) {
             title,
             jaarlaag,
             subcategory,
+            schoolsoort,
             n_term: nterm,
             weging,
             weging_se,
@@ -1843,15 +1975,18 @@ export function showExamEditor(
   const boundaries = extractBoundaries(exam.questions, mode);
   cascadeStructure(exam.questions, boundaries, mode);
 
-  const availableObs = Store.getObservatiesSync().filter((o) =>
-    (o.jaarlagen ?? []).map(String).includes(String(exam.jaarlaag))
-  );
+  const availableObs = Store.getObservatiesSync().filter((o) => {
+    if (!(o.jaarlagen ?? []).map(String).includes(String(exam.jaarlaag))) return false;
+    const obsSS = o.schoolsoort ?? [];
+    if (obsSS.length === 0) return true;
+    return (exam.schoolsoort ?? []).some((ss) => obsSS.includes(ss));
+  });
 
   showModal(
     `
     <h3>${
       isEdit
-        ? `Toets bewerken: <em>${escHtml(exam.title)}</em> <span style="font-weight:normal;font-size:14px;font-style:normal">(Jaarlaag ${escHtml(String(exam.jaarlaag))}, ${escHtml(toetsYear)})</span>`
+        ? `Toets bewerken: <em>${escHtml(exam.title)}</em> <span style="font-weight:normal;font-size:14px;font-style:normal">(Jaarlaag ${escHtml(String(exam.jaarlaag))}, ${escHtml((exam.schoolsoort ?? []).join(' / ') || '—')}, ${escHtml(toetsYear)})</span>`
         : `Nieuwe toets — stap 2 van 2: <em>${escHtml(exam.title)}</em>`
     }</h3>
     <div class="form-row" style="align-items:flex-end;gap:20px;margin-bottom:10px;flex-wrap:wrap">

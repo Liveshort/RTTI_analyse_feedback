@@ -1,5 +1,18 @@
-import { showModal, closeModal, toast, escHtml, SEL, overlayElement, getWiFilter } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  toast,
+  escHtml,
+  SEL,
+  overlayElement,
+  getSchoolsoortFilter,
+  getJaarlagFilter,
+  getJaarlagKlasFilter,
+  getEigenOnly,
+  getAdminSubjectFilter,
+} from '../app.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
+import { lerpColor } from '../utils/colors.js';
 import { openGroupStudentsModal } from './leerlingen.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -15,8 +28,15 @@ export function renderGroepen() {
   SEL.groupsYear.setOptions(years.map((y) => ({ value: y, label: y })));
   SEL.groupsYear.setValue(years.includes(currentYear) ? currentYear : years[0]);
 
-  document.getElementById('btn-add-group').onclick = () => openGroupModal(null);
-  document.getElementById('btn-import-groups').onclick = () => openGroupCSVImport();
+  const isAdmin = Store.isAdminActive();
+  const btnAdd = document.getElementById('btn-add-group');
+  const btnImport = document.getElementById('btn-import-groups');
+  btnAdd.classList.toggle('hidden', !isAdmin);
+  btnImport.classList.toggle('hidden', !isAdmin);
+  if (isAdmin) {
+    btnAdd.onclick = () => openGroupModal(null);
+    btnImport.onclick = () => openGroupCSVImport();
+  }
   renderGroepenForYear(SEL.groupsYear.getValue());
 }
 
@@ -28,18 +48,46 @@ const SUBCATEGORY_TO_FILTER = {
   wisd: 'WisD',
 };
 
-export function renderGroepenForYear(year) {
+export async function renderGroepenForYear(year) {
   let groups = Store.getGroupsSync(year);
   const students = Store.getStudentsSync(year);
+  const users = await Store.loadUsers();
   const container = document.getElementById('group-list');
 
-  // Apply wi-filter when wiskunde is the active subject
-  if (Store.getActiveSubject() === 'wi') {
-    const wiFilter = getWiFilter();
+  // Admin: filter by selected subject in the topbar filter bar
+  if (Store.isAdminActive()) {
+    const adminSubj = getAdminSubjectFilter();
+    if (adminSubj) {
+      groups = groups.filter((g) => g.subject === adminSubj);
+    }
+  }
+
+  const activeSubject = Store.isAdminActive() ? getAdminSubjectFilter() : Store.getActiveSubject();
+  const schoolsoortFilter = getSchoolsoortFilter();
+  const jaarlagFilter = getJaarlagFilter();
+  const jaarlagKlasFilter = getJaarlagKlasFilter();
+  const eigenOnly = getEigenOnly();
+  const activeUser = Store.getActiveUser();
+
+  // Schoolsoort filter — always applied (empty set = show nothing)
+  groups = groups.filter((g) => (g.schoolsoort ?? []).some((ss) => schoolsoortFilter.has(ss)));
+
+  // Jaarlaag filter
+  if (activeSubject === 'wi') {
+    // Klas 1-6 filter (by numeric jaarlaag)
+    groups = groups.filter((g) => jaarlagKlasFilter.has(String(g.jaarlaag)));
+    // Subcategory filter (OB / WisA / WisB / WisC / WisD)
     groups = groups.filter((g) => {
       const filterKey = SUBCATEGORY_TO_FILTER[g.subcategory ?? ''];
-      return filterKey ? wiFilter.has(filterKey) : true;
+      return filterKey ? jaarlagFilter.has(filterKey) : true;
     });
+  } else {
+    groups = groups.filter((g) => jaarlagFilter.has(String(g.jaarlaag)));
+  }
+
+  // Eigen filter
+  if (eigenOnly && activeUser && !Store.isAdminActive()) {
+    groups = groups.filter((g) => (g.docenten ?? []).includes(activeUser.id));
   }
 
   groups.sort(
@@ -68,17 +116,32 @@ export function renderGroepenForYear(year) {
       })
       .sort()
       .join(', ');
+    const schoolsoortText = (g.schoolsoort ?? []).join(', ') || '—';
+    const docentNames =
+      (g.docenten ?? [])
+        .map((did) => {
+          const u = users.find((u) => u.id === did);
+          return u ? [u.voornaam, u.tussenvoegsel, u.achternaam].filter(Boolean).join(' ') : null;
+        })
+        .filter(Boolean)
+        .join(', ') || '—';
     html += `
       <div class="card">
         <div class="card-main">
-          <button class="student-name-btn group-name-btn" data-action="open-group" data-id="${escHtml(g.id)}">${escHtml(g.name)}</button>
-          <span class="muted">${g.student_ids.length} leerlingen</span>
-          <p class="small">${escHtml(memberNames) || '—'}</p>
+          <button class="student-name-btn group-name-btn" data-action="open-group" data-id="${escHtml(g.id)}" ${Store.isAdminActive() ? 'disabled' : ''}>${escHtml(g.name)}</button>
+          <p class="small muted">${escHtml(schoolsoortText)} &nbsp;·&nbsp; Docent(en): ${escHtml(docentNames)}</p>
+          <p class="small muted">${g.student_ids.length} leerlingen${memberNames ? ': ' + escHtml(memberNames) : ''}</p>
+          ${g.student_ids.length > 0 ? `<p class="small" data-grade-stats="${escHtml(g.id)}"></p>` : ''}
         </div>
+        ${
+          Store.isAdminActive()
+            ? `
         <div class="card-actions">
           <button class="btn-sm btn-sm-icon" data-action="edit-group" data-id="${escHtml(g.id)}" title="Groep bewerken">✎</button>
           <button class="btn-sm btn-danger btn-sm-icon" data-action="del-group" data-id="${escHtml(g.id)}"${g.student_ids.length > 0 ? ' disabled title="Deze groep heeft leerlingen en kan dus niet worden verwijderd."' : ' title="Groep verwijderen"'}>🗑</button>
-        </div>
+        </div>`
+            : ''
+        }
       </div>`;
   }
   container.innerHTML = html;
@@ -98,31 +161,198 @@ export function renderGroepenForYear(year) {
   container
     .querySelectorAll('[data-action="del-group"]')
     .forEach((b) => b.addEventListener('click', () => deleteGroup(b.dataset.id)));
+
+  // Fill grade stats asynchronously — does not block initial render
+  fillGroupGradeStats(
+    groups.filter((g) => g.student_ids.length > 0),
+    year,
+    container
+  );
 }
+
+// ── Grade stats helpers ────────────────────────────────────────────────────────
+
+async function calcGroupGradeStats(group, year) {
+  const subject = group.subject;
+  if (!subject) return null;
+
+  const allStudents = Store.getStudentsSync(year);
+  const students = allStudents.filter((s) => group.student_ids.includes(s.id));
+  if (students.length === 0) return null;
+
+  const allExams = await Store.getExams(year, subject);
+  const exams = allExams.filter(
+    (e) => String(e.jaarlaag) === String(group.jaarlaag) && e.volgnummer
+  );
+  if (exams.length === 0) return null;
+
+  const resitMap = {};
+  exams
+    .filter((e) => e.parent_id)
+    .forEach((e) => {
+      (resitMap[e.parent_id] ??= []).push(e);
+    });
+  const examFamilies = exams
+    .filter((e) => !e.parent_id)
+    .map((e) => ({
+      original: e,
+      resits: (resitMap[e.id] ?? []).sort((a, b) => (a.attempt ?? 1) - (b.attempt ?? 1)),
+    }));
+  if (examFamilies.length === 0) return null;
+
+  const scoreMap = {};
+  await Promise.all(
+    students.map(async (s) => {
+      const rec = await Store.getStudentScores(s.id, year, subject);
+      scoreMap[s.id] = rec?.scores ?? {};
+    })
+  );
+
+  function studentGrade(s, exam) {
+    const examScores = scoreMap[s.id]?.[exam.id];
+    if (!examScores || Object.keys(examScores).length === 0) return null;
+    const qs = {};
+    exam.questions.forEach((q) => {
+      const v = examScores[q.id];
+      if (v !== undefined) qs[q.id] = v;
+    });
+    if (Object.keys(qs).length === 0) return null;
+    return Store.calcResults(exam, qs).grade;
+  }
+
+  function bestGradeForFamily(s, family) {
+    const candidates = [family.original, ...family.resits]
+      .map((e) => ({ exam: e, grade: studentGrade(s, e) }))
+      .filter((x) => x.grade !== null);
+    if (candidates.length === 0) return { grade: null };
+    return candidates.reduce((a, b) => (b.grade > a.grade ? b : a));
+  }
+
+  const yearAvgs = students
+    .map((s) => {
+      let sumW = 0,
+        sumWG = 0;
+      for (const f of examFamilies) {
+        const { grade } = bestGradeForFamily(s, f);
+        if (grade === null) continue;
+        const w = Number(f.original.weging ?? 1);
+        sumW += w;
+        sumWG += w * grade;
+      }
+      return sumW > 0 ? sumWG / sumW : null;
+    })
+    .filter((g) => g !== null);
+
+  if (yearAvgs.length === 0) return null;
+
+  const mean = yearAvgs.reduce((a, b) => a + b, 0) / yearAvgs.length;
+  const sd =
+    yearAvgs.length < 2
+      ? 0
+      : Math.sqrt(yearAvgs.reduce((s, v) => s + (v - mean) ** 2, 0) / yearAvgs.length);
+  const fails = Math.round((yearAvgs.filter((g) => g < 5.5).length / yearAvgs.length) * 100);
+
+  return { mean, sd, fails };
+}
+
+function gradeStatHtml({ mean, sd, fails }) {
+  const dotColor = mean < 5.5 ? '#e57373' : lerpColor('#ffd54f', '#66bb6a', (mean - 5.5) / 4.5);
+  const dot = `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:middle;margin:0 3px 0 0;flex-shrink:0"><circle cx="5" cy="5" r="5" fill="${dotColor}"/></svg>`;
+  return (
+    `<span class="muted" style="display:flex;align-items:center;gap:0">` +
+    `${dot}${mean.toFixed(1).replace('.', ',')} ± ${sd.toFixed(1).replace('.', ',')}` +
+    ` &nbsp;·&nbsp; ${fails}% onvoldoende</span>`
+  );
+}
+
+async function fillGroupGradeStats(groups, year, container) {
+  for (const g of groups) {
+    const stats = await calcGroupGradeStats(g, year);
+    if (!stats) continue;
+    const el = container.querySelector('[data-grade-stats="' + g.id + '"]');
+    if (el) el.innerHTML = gradeStatHtml(stats);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 export async function openGroupModal(id) {
   const year = SEL.groupsYear.getValue() || Store.getConfigSync().activeYear;
-  const subject = Store.getActiveSubject();
-  const students = await Store.getStudents(year);
+  const [students, users] = await Promise.all([Store.getStudents(year), Store.loadUsers()]);
   students.sort((a, b) => {
     const scmp = (a.stamklas ?? '').localeCompare(b.stamklas ?? '');
     if (scmp !== 0) return scmp;
     return (a.achternaam ?? '').localeCompare(b.achternaam ?? '');
   });
 
-  let group = { id: '', name: '', jaarlaag: '', student_ids: [] };
+  let group = { id: '', name: '', jaarlaag: '', schoolsoort: [], docenten: [], student_ids: [] };
   let groupsInJaarlaag = [];
 
   if (id) {
     const all = await Store.getGroups(year);
     group = JSON.parse(JSON.stringify(all.find((g) => g.id === id) ?? group));
     groupsInJaarlaag = Store.getGroupsSync(year)
-      .filter((g) => String(g.jaarlaag) === String(group.jaarlaag))
+      .filter((g) => String(g.jaarlaag) === String(group.jaarlaag) && g.subject === group.subject)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   const hasStudents = group.student_ids.length > 0;
   const isEdit = !!id;
+
+  const JAARLAGEN = ['1', '2', '3', '4', '5', '6'];
+  const SCHOOLSOORTEN = ['Vmbo-bb', 'Vmbo-kb', 'Vmbo-gl', 'Vmbo-tl', 'Havo', 'Vwo', 'Gymnasium'];
+  const VAKKEN = [
+    { code: 'bio', label: 'Biologie' },
+    { code: 'nat', label: 'Natuurkunde' },
+    { code: 'schk', label: 'Scheikunde' },
+    { code: 'wi', label: 'Wiskunde' },
+  ];
+  const jlDisabled = isEdit && hasStudents;
+  const ssDisabled = isEdit && hasStudents;
+  const vakDisabled = isEdit && hasStudents;
+
+  const jaarlaagHtml = JAARLAGEN.map((jl) => {
+    const sel = String(group.jaarlaag) === jl;
+    const cls = `tog-btn jl-btn jl-toggle${sel ? ' selected' : ''}${jlDisabled ? ' tog-btn-disabled' : ''}`;
+    return `<button type="button" class="${cls}" data-jl="${jl}"${jlDisabled ? ' disabled' : ''}>${jl}</button>`;
+  }).join('');
+
+  const schoolSS = Store.getSchoolSync().schoolsoort ?? [];
+  const schoolSSFilter = schoolSS.length > 0;
+  const schoolsoortHtml = SCHOOLSOORTEN.map((ss) => {
+    const sel = (group.schoolsoort ?? []).includes(ss);
+    const disabled = ssDisabled || (schoolSSFilter && !schoolSS.includes(ss));
+    const cls = `tog-btn ss-toggle${sel ? ' selected' : ''}${disabled ? ' tog-btn-disabled' : ''}`;
+    return `<button type="button" class="${cls}" data-ss="${ss}"${disabled ? ' disabled' : ''}>${ss}</button>`;
+  }).join('');
+
+  const vakHtml = VAKKEN.map(({ code, label }) => {
+    const sel = group.subject === code;
+    const cls = `tog-btn vak-g-btn${sel ? ' selected' : ''}${vakDisabled ? ' tog-btn-disabled' : ''}`;
+    return `<button type="button" class="${cls}" data-vak="${code}"${vakDisabled ? ' disabled' : ''}>${label}</button>`;
+  }).join('');
+
+  const nonAdminUsers = users.filter((u) => !u.isAdmin && u.actief);
+
+  function buildDocentHtml(selectedSS, selectedDocentIds, selectedSubject) {
+    const subjectFilter = selectedSubject || Store.getActiveSubject() || null;
+    const filtered = nonAdminUsers.filter((u) => {
+      const teachesSubject = !subjectFilter || (u.vakken ?? []).includes(subjectFilter);
+      const hasSSOverlap =
+        selectedSS.length === 0 || (u.schoolsoort ?? []).some((ss) => selectedSS.includes(ss));
+      return teachesSubject && hasSSOverlap;
+    });
+    if (filtered.length === 0) {
+      return `<span class="form-hint muted">Geen docenten beschikbaar voor dit vak en deze schoolsoort.</span>`;
+    }
+    return filtered
+      .map((u) => {
+        const uName = [u.voornaam, u.tussenvoegsel, u.achternaam].filter(Boolean).join(' ');
+        const sel = (selectedDocentIds ?? []).includes(u.id);
+        return `<button type="button" class="tog-btn docent-toggle${sel ? ' selected' : ''}" data-docent-id="${escHtml(u.id)}">${escHtml(uName)}</button>`;
+      })
+      .join('');
+  }
 
   let studentsSection;
   if (isEdit) {
@@ -169,27 +399,121 @@ export async function openGroupModal(id) {
       </div>`;
   }
 
-  showModal(
-    `
-    <h3>${id ? 'Groep bewerken' : 'Groep toevoegen'}</h3>
+  const initialSS = group.schoolsoort ?? [];
+  const initialDocenten = group.docenten ?? [];
+  const initialDocentHtml = buildDocentHtml(initialSS, initialDocenten, group.subject);
+
+  const fieldsHtml = isEdit
+    ? `
+    <div class="form-row" style="gap:20px;align-items:flex-start">
+      <div class="form-group" style="flex:1;min-width:0">
+        <label>Naam (bijv. 6nat4 of 2anat)</label>
+        <input id="f-gname" type="text" value="${escHtml(group.name)}" ${hasStudents ? 'disabled' : ''} />
+      </div>
+      <div class="form-group" style="flex:1;min-width:0">
+        <label>Schoolsoort</label>
+        <div class="vak-toggle-group">${schoolsoortHtml}</div>
+      </div>
+    </div>
+    <div class="form-row" style="gap:20px;align-items:flex-start;margin-top:4px">
+      <div class="form-group" style="flex:0 0 auto;margin-bottom:0">
+        <label>Vak</label>
+        <div class="btn-toggle-group">${vakHtml}</div>
+      </div>
+      <div class="form-group" style="flex:0 0 auto;margin-bottom:0">
+        <label>Leerjaar</label>
+        <div class="btn-toggle-group">${jaarlaagHtml}</div>
+      </div>
+      <div class="form-group" style="flex:1;min-width:0;margin-bottom:0">
+        <label>Docent(en)</label>
+        <div class="vak-toggle-group" id="f-g-docenten">${initialDocentHtml}</div>
+      </div>
+    </div>
+  `
+    : `
     <div class="form-group">
       <label>Naam (bijv. 6nat4 of 2anat)</label>
       <input id="f-gname" type="text" value="${escHtml(group.name)}" ${hasStudents ? 'disabled' : ''} />
-      <span class="form-hint muted">${
-        hasStudents
-          ? 'Naam kan niet worden gewijzigd zolang er leerlingen in de groep zitten.'
-          : isEdit
-            ? 'Jaarlaag wordt afgeleid van het eerste cijfer in de naam.'
-            : 'Jaarlaag wordt afgeleid van het eerste cijfer in de naam. Leerlingen kunnen worden toegevoegd nadat de groep is aangemaakt.'
-      }</span>
     </div>
-    ${isEdit ? `<div class="form-group">${studentsSection}</div>` : ''}
-    <div class="form-actions">
+    <div class="form-group">
+      <label>Schoolsoort</label>
+      <div class="vak-toggle-group">${schoolsoortHtml}</div>
+    </div>
+    <div class="form-group">
+      <label>Vak</label>
+      <div class="btn-toggle-group">${vakHtml}</div>
+    </div>
+    <div class="form-group">
+      <label>Leerjaar</label>
+      <div class="btn-toggle-group">${jaarlaagHtml}</div>
+    </div>
+  `;
+
+  showModal(
+    `
+    <h3>${id ? 'Groep bewerken' : 'Groep toevoegen'}</h3>
+    ${fieldsHtml}
+    ${
+      !isEdit
+        ? `
+    <div class="form-group" style="margin-bottom:0">
+      <label>Docent(en)</label>
+      <div class="vak-toggle-group" id="f-g-docenten">${initialDocentHtml}</div>
+    </div>`
+        : ''
+    }
+    ${hasStudents ? '<span class="form-hint muted" style="display:block;margin-top:8px">Naam, leerjaar, schoolsoort en vak kunnen niet worden gewijzigd zolang er leerlingen in de groep zitten.</span>' : ''}
+    ${isEdit ? `<div class="form-group" style="margin-top:16px">${studentsSection}</div>` : ''}
+    <div class="form-actions" style="margin-top:16px">
       <button class="btn-primary" id="f-g-save">Opslaan</button>
       <button class="btn-secondary" data-close-modal="1">Annuleren</button>
     </div>
   `,
     (el) => {
+      // Helper to refresh docent section
+      const updateDocentSection = () => {
+        const selectedSS = [...el.querySelectorAll('.ss-toggle.selected')].map((b) => b.dataset.ss);
+        const selectedDocenten = [...el.querySelectorAll('.docent-toggle.selected')].map(
+          (b) => b.dataset.docentId
+        );
+        const selectedVak = el.querySelector('.vak-g-btn.selected')?.dataset.vak ?? null;
+        const docentContainer = el.querySelector('#f-g-docenten');
+        docentContainer.innerHTML = buildDocentHtml(selectedSS, selectedDocenten, selectedVak);
+        docentContainer.querySelectorAll('.docent-toggle').forEach((btn) => {
+          btn.addEventListener('click', () => btn.classList.toggle('selected'));
+        });
+      };
+
+      // Vak single-select + update docents
+      el.querySelectorAll('.vak-g-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          el.querySelectorAll('.vak-g-btn').forEach((b) => b.classList.remove('selected'));
+          btn.classList.add('selected');
+          updateDocentSection();
+        });
+      });
+
+      // Jaarlaag single-select
+      el.querySelectorAll('.jl-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          el.querySelectorAll('.jl-toggle').forEach((b) => b.classList.remove('selected'));
+          btn.classList.add('selected');
+        });
+      });
+
+      // Schoolsoort multi-select + update docents
+      el.querySelectorAll('.ss-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          btn.classList.toggle('selected');
+          updateDocentSection();
+        });
+      });
+
+      // Initial docent toggle listeners
+      el.querySelectorAll('.docent-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => btn.classList.toggle('selected'));
+      });
+
       // Filter button: toggle showing only students from this group's jaarlaag
       const filterBtn = el.querySelector('#f-g-jl-filter');
       const applyFilter = (active) => {
@@ -199,7 +523,6 @@ export async function openGroupModal(id) {
         });
       };
       if (filterBtn) {
-        // Apply filter immediately on open
         applyFilter(true);
         filterBtn.addEventListener('click', () => {
           const isActive = filterBtn.dataset.active === '1';
@@ -212,18 +535,16 @@ export async function openGroupModal(id) {
 
       // Conflict resolution: checking a box may uncheck others for the same student
       if (isEdit) {
-        el.querySelector('tbody').addEventListener('change', (e) => {
+        el.querySelector('tbody')?.addEventListener('change', (e) => {
           if (e.target.type !== 'checkbox' || !e.target.checked) return;
           const sid = e.target.dataset.studentId;
           const sub = e.target.dataset.subcategory;
           el.querySelectorAll(`tbody input[type="checkbox"][data-student-id="${sid}"]`).forEach(
             (cb) => {
               if (cb === e.target) return;
-              if (subject === 'wi') {
-                // Wiskunde: only conflict within the same non-empty subcategory
+              if (group.subject === 'wi') {
                 if (sub && cb.dataset.subcategory === sub) cb.checked = false;
               } else {
-                // Other subjects: student can only be in one group
                 cb.checked = false;
               }
             }
@@ -238,15 +559,33 @@ export async function openGroupModal(id) {
           return;
         }
 
-        const parsed = Store.parseGroupName(name, subject);
-        if (!parsed.jaarlaag) {
-          toast(
-            'Kan de jaarlaag niet afleiden uit de naam. Begin de naam met een cijfer (bijv. 4nat1).',
-            'error'
-          );
+        const jlSelected = el.querySelector('.jl-toggle.selected');
+        if (!jlSelected) {
+          toast('Selecteer een jaarlaag.', 'error');
           return;
         }
-        if (subject === 'wi' && !parsed.subcategory) {
+        const jaarlaag = jlSelected.dataset.jl;
+
+        const schoolsoort = [...el.querySelectorAll('.ss-toggle.selected')].map(
+          (b) => b.dataset.ss
+        );
+        if (schoolsoort.length === 0) {
+          toast('Selecteer minimaal één schoolsoort.', 'error');
+          return;
+        }
+
+        const docenten = [...el.querySelectorAll('.docent-toggle.selected')].map(
+          (b) => b.dataset.docentId
+        );
+
+        const vakSelected = el.querySelector('.vak-g-btn.selected');
+        if (!vakSelected) {
+          toast('Selecteer een vak.', 'error');
+          return;
+        }
+        const resolvedSubject = vakSelected.dataset.vak;
+        const parsed = Store.parseGroupName(name, resolvedSubject);
+        if (resolvedSubject === 'wi' && !parsed.subcategory) {
           toast(
             'Kan de subcategorie niet afleiden uit de naam. Gebruik bijv. 4wisa1, 5wisb2 of 3wi1 voor onderbouw.',
             'error'
@@ -255,7 +594,6 @@ export async function openGroupModal(id) {
         }
 
         if (isEdit) {
-          // Collect new student_ids per group from table checkboxes
           const byGroup = {};
           groupsInJaarlaag.forEach((g) => (byGroup[g.id] = []));
           el.querySelectorAll('tbody input[type="checkbox"]:checked').forEach((cb) => {
@@ -268,35 +606,45 @@ export async function openGroupModal(id) {
             const existing = allGroups.find((ag) => ag.id === g.id);
             if (!existing) continue;
             const newIds = byGroup[g.id] ?? [];
-            const nameChanged = g.id === id && !hasStudents && name !== existing.name;
+            const isTarget = g.id === id;
+            const nameChanged = isTarget && !hasStudents && name !== existing.name;
             const idsChanged =
               [...existing.student_ids].sort((a, b) => a - b).join(',') !==
               [...newIds].sort((a, b) => a - b).join(',');
-            if (!idsChanged && !nameChanged) continue;
+            const fieldsChanged =
+              isTarget &&
+              (JSON.stringify(existing.schoolsoort ?? []) !== JSON.stringify(schoolsoort) ||
+                JSON.stringify(existing.docenten ?? []) !== JSON.stringify(docenten) ||
+                (!hasStudents && String(existing.jaarlaag) !== jaarlaag));
+            if (!idsChanged && !nameChanged && !fieldsChanged) continue;
 
             let updated = { ...existing, student_ids: newIds };
-            if (nameChanged) {
-              updated = {
-                ...updated,
-                name,
-                jaarlaag: parsed.jaarlaag,
-                subcategory: parsed.subcategory ?? undefined,
-              };
+            if (isTarget) {
+              updated = { ...updated, schoolsoort, docenten };
+              if (!hasStudents) {
+                updated = {
+                  ...updated,
+                  name,
+                  jaarlaag,
+                  subject: resolvedSubject,
+                  subcategory: parsed.subcategory ?? undefined,
+                };
+              }
             }
             await Store.upsertGroup(updated, year);
           }
         } else {
-          const ids = [...el.querySelectorAll('#f-gstudents input:checked')].map((i) =>
-            Number(i.value)
-          );
           const gid = Store.makeGroupId(name, year);
           await Store.upsertGroup(
             {
               id: gid,
               name,
-              jaarlaag: parsed.jaarlaag,
+              jaarlaag,
+              subject: resolvedSubject,
+              schoolsoort,
+              docenten,
               subcategory: parsed.subcategory ?? undefined,
-              student_ids: ids,
+              student_ids: [],
             },
             year
           );
@@ -330,7 +678,7 @@ export async function openGroupCSVImport() {
     `
     <h3>Groepen importeren — ${escHtml(year)}</h3>
     <p class="muted" style="margin-bottom:12px">
-      Verwachte kolommen: <code>Jaarlaag, Groep, Leerlingnummer</code>
+      Verwachte kolommen: <code>Jaarlaag, Groep, Leerlingnummer, Schoolsoort</code>
     </p>
     <div class="form-group">
       <label>CSV-bestand</label>
@@ -353,8 +701,16 @@ export async function openGroupCSVImport() {
           const jaarlaag = String(r['Jaarlaag'] ?? r['jaarlaag'] ?? '').trim();
           const naam = (r['Groep'] ?? r['groep'] ?? '').trim();
           const llnr = Number(r['Leerlingnummer'] ?? r['leerlingnummer']);
+          const ssRaw = (r['Schoolsoort'] ?? r['schoolsoort'] ?? '').trim();
+          const schoolsoort = ssRaw
+            ? ssRaw
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : [];
           if (!naam || !llnr) continue;
-          if (!groupMap[naam]) groupMap[naam] = { jaarlaag, name: naam, student_ids: [] };
+          if (!groupMap[naam])
+            groupMap[naam] = { jaarlaag, schoolsoort, name: naam, student_ids: [] };
           if (!groupMap[naam].student_ids.includes(llnr)) groupMap[naam].student_ids.push(llnr);
         }
         const entries = Object.values(groupMap);
@@ -381,6 +737,7 @@ export async function openGroupCSVImport() {
             id: Store.makeGroupId(g.name, year),
             name: g.name,
             jaarlaag: parsed.jaarlaag ?? g.jaarlaag,
+            schoolsoort: g.schoolsoort,
             subcategory: parsed.subcategory ?? undefined,
             student_ids: g.student_ids,
           };

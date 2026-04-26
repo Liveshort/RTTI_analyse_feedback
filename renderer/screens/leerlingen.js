@@ -7,6 +7,10 @@ import {
   SEL,
   overlayElement,
   pushModalChart,
+  getSchoolsoortFilter,
+  getJaarlagFilter,
+  getJaarlagKlasFilter,
+  getEigenOnly,
 } from '../app.js';
 import { lerpColor, examTypeColor } from '../utils/colors.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
@@ -17,6 +21,9 @@ import { computeExamStats } from './toetsen.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const leerlingenState = { year: null, search: '' };
+
+const JAARLAGEN = ['1', '2', '3', '4', '5', '6'];
+const SCHOOLSOORTEN = ['Vmbo-bb', 'Vmbo-kb', 'Vmbo-gl', 'Vmbo-tl', 'Havo', 'Vwo', 'Gymnasium'];
 
 export function renderLeerlingen() {
   const cfg = Store.getConfigSync();
@@ -35,8 +42,15 @@ export function renderLeerlingen() {
     renderStudentList();
   };
 
-  document.getElementById('btn-add-student').onclick = () => openStudentModal(null);
-  document.getElementById('btn-import-students').onclick = () => openStudentCSVImport();
+  const isAdmin = Store.isAdminActive();
+  const btnAdd = document.getElementById('btn-add-student');
+  const btnImport = document.getElementById('btn-import-students');
+  btnAdd.classList.toggle('hidden', !isAdmin);
+  btnImport.classList.toggle('hidden', !isAdmin);
+  if (isAdmin) {
+    btnAdd.onclick = () => openStudentModal(null);
+    btnImport.onclick = () => openStudentCSVImport();
+  }
 
   renderStudentList();
 }
@@ -47,6 +61,51 @@ export function renderStudentList() {
   const container = document.getElementById('student-list');
 
   let students = [...Store.getStudentsSync(year)];
+
+  const activeSubject = Store.getActiveSubject();
+  const schoolsoortFilter = getSchoolsoortFilter();
+  const jaarlagFilter = getJaarlagFilter();
+  const jaarlagKlasFilter = getJaarlagKlasFilter();
+  const eigenOnly = getEigenOnly();
+  const activeUser = Store.getActiveUser();
+
+  // Schoolsoort filter — always applied (empty set = show nothing)
+  students = students.filter((s) => (s.schoolsoort ?? []).some((ss) => schoolsoortFilter.has(ss)));
+
+  // Jaarlaag filter
+  if (activeSubject === 'wi') {
+    // Klas 1-6 filter (by numeric jaarlaag)
+    students = students.filter((s) => jaarlagKlasFilter.has(String(s.jaarlaag ?? '')));
+    // Subcategory filter: OB covers jaarlaag 1-3; any WisX covers jaarlaag 4-6
+    const allowedJl = new Set();
+    if (jaarlagFilter.has('OB')) {
+      allowedJl.add('1');
+      allowedJl.add('2');
+      allowedJl.add('3');
+    }
+    if (
+      jaarlagFilter.has('WisA') ||
+      jaarlagFilter.has('WisB') ||
+      jaarlagFilter.has('WisC') ||
+      jaarlagFilter.has('WisD')
+    ) {
+      allowedJl.add('4');
+      allowedJl.add('5');
+      allowedJl.add('6');
+    }
+    students = students.filter((s) => allowedJl.has(String(s.jaarlaag ?? '')));
+  } else {
+    students = students.filter((s) => jaarlagFilter.has(String(s.jaarlaag ?? '')));
+  }
+
+  // Eigen filter: student must be in at least one group where teacher is a docent
+  if (eigenOnly && activeUser && !Store.isAdminActive()) {
+    const myGroups = Store.getGroupsSync(year).filter((g) =>
+      (g.docenten ?? []).includes(activeUser.id)
+    );
+    const myStudentIds = new Set(myGroups.flatMap((g) => g.student_ids));
+    students = students.filter((s) => myStudentIds.has(s.id));
+  }
 
   // Filter by search (after sort so filtered results stay ordered)
   if (query) {
@@ -85,15 +144,20 @@ export function renderStudentList() {
       <div class="card">
         <div class="card-main">
           <div class="student-card-row">
-            <button class="student-name-btn" data-action="profile" data-id="${s.id}">${escHtml(Store.fullName(s))}</button>
+            <button class="student-name-btn" data-action="profile" data-id="${s.id}" ${Store.isAdminActive() ? 'disabled' : ''}>${escHtml(Store.fullName(s))}</button>
             <span class="card-sep">·</span>
             <span class="student-id-inline">${s.id}${s._geslacht ? ' · ' + escHtml(s._geslacht) : ''}</span>
           </div>
         </div>
+        ${
+          Store.isAdminActive()
+            ? `
         <div class="card-actions">
           <button class="btn-sm btn-sm-icon" data-action="edit-student" data-id="${s.id}" title="Leerling bewerken">✎</button>
           <button class="btn-sm btn-danger btn-sm-icon" data-action="del-student" data-id="${s.id}" title="Leerling verwijderen">🗑</button>
-        </div>
+        </div>`
+            : ''
+        }
       </div>`;
   }
   container.innerHTML = html;
@@ -111,17 +175,31 @@ export function renderStudentList() {
     .querySelectorAll('[data-action="del-student"]')
     .forEach((b) => b.addEventListener('click', () => deleteStudent(Number(b.dataset.id))));
 
-  // Disable Verwijderen for students that have scores (non-blocking)
+  // Disable Verwijderen for students that cannot be deleted (non-blocking)
   for (const s of students) {
-    Store.studentHasScores(s.id, year).then((has) => {
-      if (!has) return;
+    const checkHasScores = Store.isAdminActive()
+      ? Store.studentHasAnyScores(s.id)
+      : Store.studentHasScores(s.id, year);
+
+    checkHasScores.then((hasScores) => {
       const btn = container.querySelector(
         `[data-action="del-student"][data-id="${CSS.escape(String(s.id))}"]`
       );
-      if (btn) {
+      if (!btn) return;
+      if (hasScores) {
         btn.disabled = true;
         btn.title =
           'Er zijn scores ingevoerd voor deze leerling, de leerling kan dus niet worden verwijderd.';
+        return;
+      }
+      if (Store.isAdminActive()) {
+        // Also block if the student is in any group in any loaded year
+        const allGroups = Store.getGroupsSync(year);
+        const inGroup = allGroups.some((g) => (g.student_ids ?? []).includes(s.id));
+        if (inGroup) {
+          btn.disabled = true;
+          btn.title = 'Deze leerling zit in een groep en kan dus niet worden verwijderd.';
+        }
       }
     });
   }
@@ -1569,6 +1647,17 @@ export async function openProfielModal(
 
 // ── Student add/edit modal ────────────────────────────────────────────────────
 export function openStudentModal(id) {
+  const jaarlaagHtml = JAARLAGEN.map(
+    (jl) =>
+      `<button type="button" class="tog-btn jl-btn jl-s-toggle" data-jl="${jl}">${jl}</button>`
+  ).join('');
+  const schoolSS = Store.getSchoolSync().schoolsoort ?? [];
+  const schoolSSFilter = schoolSS.length > 0;
+  const schoolsoortHtml = SCHOOLSOORTEN.map((ss) => {
+    const disabled = schoolSSFilter && !schoolSS.includes(ss);
+    return `<button type="button" class="tog-btn ss-s-toggle${disabled ? ' tog-btn-disabled' : ''}" data-ss="${ss}"${disabled ? ' disabled' : ''}>${ss}</button>`;
+  }).join('');
+
   showModal(
     `
     <h3>${id ? 'Leerling bewerken' : 'Leerling toevoegen'}</h3>
@@ -1596,12 +1685,22 @@ export function openStudentModal(id) {
         <input id="f-sachter" type="text" />
       </div>
     </div>
-    <div class="form-row">
-      <div class="form-group" style="flex:2">
+    <div class="form-row" style="align-items:flex-end;gap:20px">
+      <div class="form-group" style="flex:0 0 auto;margin-bottom:0">
+        <label>Jaarlaag</label>
+        <div class="btn-toggle-group">${jaarlaagHtml}</div>
+      </div>
+      <div class="form-group" style="flex:2;margin-bottom:0">
         <label>Stamklas</label>
         <input id="f-sstamklas" type="text" placeholder="5A" />
       </div>
-      <div class="form-group" style="flex:1.5">
+    </div>
+    <div class="form-row" style="margin-top:10px">
+      <div class="form-group" style="flex:1;margin-bottom:0">
+        <label>Schoolsoort</label>
+        <div class="vak-toggle-group">${schoolsoortHtml}</div>
+      </div>
+      <div class="form-group" style="flex:0 0 auto;margin-bottom:0">
         <label>Schooljaar</label>
         <div id="f-syear-label" style="padding:7px 0;font-size:13px;color:var(--muted);font-style:italic"></div>
       </div>
@@ -1635,8 +1734,24 @@ export function openStudentModal(id) {
           el.querySelector('#f-sachter').value = s.achternaam ?? s.name ?? '';
           el.querySelector('#f-sstamklas').value = s.stamklas ?? '';
           geslachtSel.setValue(s.geslacht ?? '');
+          if (s.jaarlaag) {
+            el.querySelector(`.jl-s-toggle[data-jl="${s.jaarlaag}"]`)?.classList.add('selected');
+          }
+          (s.schoolsoort ?? []).forEach((ss) => {
+            el.querySelector(`.ss-s-toggle[data-ss="${ss}"]`)?.classList.add('selected');
+          });
         }
       }
+
+      el.querySelectorAll('.jl-s-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          el.querySelectorAll('.jl-s-toggle').forEach((b) => b.classList.remove('selected'));
+          btn.classList.add('selected');
+        });
+      });
+      el.querySelectorAll('.ss-s-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => btn.classList.toggle('selected'));
+      });
 
       el.querySelector('#f-s-save').addEventListener('click', async () => {
         const sid = Number(el.querySelector('#f-sid').value);
@@ -1645,6 +1760,10 @@ export function openStudentModal(id) {
           toast('Vul leerlingnummer en achternaam in.', 'error');
           return;
         }
+        const jaarlaag = el.querySelector('.jl-s-toggle.selected')?.dataset.jl ?? '';
+        const schoolsoort = [...el.querySelectorAll('.ss-s-toggle.selected')].map(
+          (b) => b.dataset.ss
+        );
         await Store.upsertStudent(
           {
             id: sid,
@@ -1653,6 +1772,8 @@ export function openStudentModal(id) {
             achternaam,
             stamklas: el.querySelector('#f-sstamklas').value.trim(),
             geslacht: geslachtSel.getValue(),
+            jaarlaag,
+            schoolsoort,
           },
           year
         );
@@ -1683,7 +1804,7 @@ export async function openStudentCSVImport() {
     `
     <h3>Leerlingen importeren — ${escHtml(year)}</h3>
     <p class="muted" style="margin-bottom:12px">
-      Verwachte kolommen: <code>Leerlingnummer, Voornaam, Tussenvoegsel, Achternaam, Geslacht, Stamklas</code>
+      Verwachte kolommen: <code>Leerlingnummer, Voornaam, Tussenvoegsel, Achternaam, Geslacht, Stamklas, Jaarlaag, Schoolsoort</code>
     </p>
     <div class="form-group">
       <label>CSV-bestand</label>
@@ -1728,14 +1849,24 @@ export async function openStudentCSVImport() {
       el.querySelector('#f-csv-import').addEventListener('click', async () => {
         if (!parsed) return;
         const students = parsed
-          .map((r) => ({
-            id: Number(r['Leerlingnummer'] ?? r['leerlingnummer']),
-            voornaam: r['Voornaam'] ?? r['voornaam'] ?? '',
-            tussenvoegsel: r['Tussenvoegsel'] ?? r['tussenvoegsel'] ?? '',
-            achternaam: r['Achternaam'] ?? r['achternaam'] ?? '',
-            geslacht: r['Geslacht'] ?? r['geslacht'] ?? '',
-            stamklas: r['Stamklas'] ?? r['stamklas'] ?? '',
-          }))
+          .map((r) => {
+            const ssRaw = (r['Schoolsoort'] ?? r['schoolsoort'] ?? '').trim();
+            return {
+              id: Number(r['Leerlingnummer'] ?? r['leerlingnummer']),
+              voornaam: r['Voornaam'] ?? r['voornaam'] ?? '',
+              tussenvoegsel: r['Tussenvoegsel'] ?? r['tussenvoegsel'] ?? '',
+              achternaam: r['Achternaam'] ?? r['achternaam'] ?? '',
+              geslacht: r['Geslacht'] ?? r['geslacht'] ?? '',
+              stamklas: r['Stamklas'] ?? r['stamklas'] ?? '',
+              jaarlaag: String(r['Jaarlaag'] ?? r['jaarlaag'] ?? '').trim(),
+              schoolsoort: ssRaw
+                ? ssRaw
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+                : [],
+            };
+          })
           .filter((s) => s.id && s.achternaam);
         await Store.upsertStudents(students, year);
         closeModal();

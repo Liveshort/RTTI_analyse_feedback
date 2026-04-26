@@ -172,6 +172,56 @@ ipcMain.handle('fs:ensureDir', (_event, relPath) => {
 ipcMain.handle('fs:getDataDir', () => getDataDir());
 
 // ---------------------------------------------------------------------------
+// Local session (machine-local, not synced via OneDrive)
+// Stored in app.getPath('userData'), outside the shared data/ folder.
+// ---------------------------------------------------------------------------
+function getSessionPath() {
+  return path.join(app.getPath('userData'), 'session.json');
+}
+
+ipcMain.handle('fs:readLocalSession', () => {
+  const p = getSessionPath();
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (_) {
+    return null;
+  }
+});
+
+ipcMain.handle('fs:writeLocalSession', (_event, data) => {
+  fs.writeFileSync(getSessionPath(), JSON.stringify(data, null, 2), 'utf8');
+});
+
+// ---------------------------------------------------------------------------
+// User photo helpers (stored in data/fotos/)
+// ---------------------------------------------------------------------------
+ipcMain.handle('fs:readPhotoAsDataUrl', (_event, relPath) => {
+  const abs = path.join(getDataDir(), relPath);
+  if (!fs.existsSync(abs)) return null;
+  try {
+    const buf = fs.readFileSync(abs);
+    const ext = path.extname(abs).slice(1).toLowerCase();
+    const mimeMap = {
+      png: 'image/png',
+      svg: 'image/svg+xml',
+      gif: 'image/gif',
+      webp: 'image/webp',
+    };
+    const mime = mimeMap[ext] ?? 'image/jpeg';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch (_) {
+    return null;
+  }
+});
+
+ipcMain.handle('fs:savePhoto', (_event, relPath, base64Data) => {
+  const abs = path.join(getDataDir(), relPath);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, Buffer.from(base64Data, 'base64'));
+});
+
+// ---------------------------------------------------------------------------
 // Typst compiler
 // ---------------------------------------------------------------------------
 function getTypstBinary() {
@@ -281,7 +331,37 @@ function createWindow() {
   if (!app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
 }
 
+function seedInitialData() {
+  const dataDir = getDataDir();
+  const gebruikersPath = path.join(dataDir, 'gebruikers.json');
+  if (!fs.existsSync(gebruikersPath)) {
+    fs.writeFileSync(
+      gebruikersPath,
+      JSON.stringify(
+        [
+          {
+            id: 'admin',
+            voornaam: 'Administrator',
+            tussenvoegsel: '',
+            achternaam: '',
+            afkorting: 'ADM',
+            vakken: ['nat', 'bio', 'schk', 'wi'],
+            kleur: '#c0392b',
+            foto: null,
+            isAdmin: true,
+            actief: true,
+          },
+        ],
+        null,
+        2
+      )
+    );
+  }
+  fs.mkdirSync(path.join(dataDir, 'fotos'), { recursive: true });
+}
+
 app.whenReady().then(() => {
+  seedInitialData();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

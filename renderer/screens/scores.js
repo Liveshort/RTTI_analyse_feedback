@@ -179,7 +179,8 @@ export async function openScoreModal(examId, year, deps) {
         year
       );
     },
-    'modal-scores'
+    'modal-scores',
+    deps?.renderToetsenList
   );
 }
 
@@ -196,8 +197,13 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
   if (!exam) return;
   activeExam = { ...exam };
 
+  const examSchoolsoort = exam.schoolsoort ?? [];
   const groups = Store.getGroupsSync(year)
-    .filter((g) => String(g.jaarlaag) === String(jaarlaag))
+    .filter((g) => {
+      if (String(g.jaarlaag) !== String(jaarlaag)) return false;
+      if (examSchoolsoort.length === 0) return true;
+      return (g.schoolsoort ?? []).some((ss) => examSchoolsoort.includes(ss));
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
   const allStudents = Store.getStudentsSync(year);
 
@@ -490,6 +496,30 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     'I%',
   ];
 
+  // ── Row validation status ─────────────────────────────────────────────────
+
+  function computeRowStatus(rowIdx) {
+    const row = gridData[rowIdx];
+    if (!row || row[0] === '__avg__' || row[0] === '__std__') return 'ok';
+    let filled = 0,
+      invalid = false;
+    for (let qi = 0; qi < exam.questions.length; qi++) {
+      const q = exam.questions[qi];
+      const val = row[2 + qi];
+      if (val === '' || val === undefined || val === null) continue;
+      filled++;
+      const upper = String(val).toUpperCase().trim();
+      if (upper === 'N') continue;
+      const num = Number(val);
+      if (isNaN(num) || num < 0 || num > q.max_points) invalid = true;
+    }
+    if (invalid) return 'invalid';
+    if (filled > 0 && filled < exam.questions.length) return 'partial';
+    return 'ok';
+  }
+
+  const rowStatus = gridData.map((_, i) => computeRowStatus(i));
+
   // ── Highlight helper ──────────────────────────────────────────────────────
 
   function applyHighlight(TD, row, col) {
@@ -506,7 +536,15 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
   function idRenderer(hot, TD, row, col, prop, value) {
     Handsontable.renderers.TextRenderer.apply(this, arguments);
     const isSpecial = row === summaryIdx || row === stdIdx;
-    TD.style.background = isSpecial ? '#e8ecf2' : '#f8f9fb';
+    const status = isSpecial ? null : rowStatus[row];
+    TD.style.background = isSpecial
+      ? '#e8ecf2'
+      : status === 'invalid'
+        ? '#ff0033'
+        : status === 'partial'
+          ? '#fff3cd'
+          : '#f8f9fb';
+    TD.style.color = status === 'invalid' ? '#fff' : '';
     TD.style.textAlign = 'center';
     if (isSpecial) TD.style.color = 'transparent';
     applyHighlight(TD, row, col);
@@ -515,8 +553,15 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
   function naamRenderer(hot, TD, row, col, prop, value) {
     Handsontable.renderers.TextRenderer.apply(this, arguments);
     const isSpecial = row === summaryIdx || row === stdIdx;
-    TD.style.background = isSpecial ? '#e8ecf2' : '#f8f9fb';
-    TD.style.color = isSpecial ? 'var(--muted, #7f8c8d)' : '#000';
+    const status = isSpecial ? null : rowStatus[row];
+    TD.style.background = isSpecial
+      ? '#e8ecf2'
+      : status === 'invalid'
+        ? '#ff0033'
+        : status === 'partial'
+          ? '#fff3cd'
+          : '#f8f9fb';
+    TD.style.color = status === 'invalid' ? '#fff' : isSpecial ? 'var(--muted, #7f8c8d)' : '#000';
     TD.style.fontWeight = isSpecial ? '700' : '400';
     TD.style.fontStyle = isSpecial ? 'italic' : 'normal';
     applyHighlight(TD, row, col);
@@ -823,6 +868,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
               .toUpperCase()
               .trim();
             gridData[row][col] = str ?? '';
+            rowStatus[row] = computeRowStatus(row);
             if (!str || str === '') {
               await Store.setScore(student.id, exam.id, q.id, undefined, year);
             } else if (s === 'N') {
@@ -859,6 +905,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
               await Store.setScore(student.id, exam.id, q.id, num, year);
             }
           }
+          rowStatus[row] = computeRowStatus(row);
           recomputeRow(gridData, exam, row, activeObs.length);
           recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, activeObs.length);
         }

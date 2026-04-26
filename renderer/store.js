@@ -31,6 +31,7 @@ const Store = (() => {
   const cache = {};
   let _years = null;
   let _activeSubject = null;
+  let _activeUser = null;
 
   async function load(relPath) {
     if (cache[relPath] !== undefined) return cache[relPath];
@@ -55,6 +56,66 @@ const Store = (() => {
   }
   function getActiveSubject() {
     return _activeSubject;
+  }
+
+  // ── Active user ────────────────────────────────────────────────────────────
+  function setActiveUser(user) {
+    _activeUser = user;
+  }
+  function getActiveUser() {
+    return _activeUser;
+  }
+  function isAdminActive() {
+    return _activeUser?.isAdmin === true;
+  }
+
+  // ── Users ──────────────────────────────────────────────────────────────────
+  async function loadUsers() {
+    return (await load('gebruikers.json')) ?? [];
+  }
+
+  // ── School ─────────────────────────────────────────────────────────────────
+  async function loadSchool() {
+    return await load('school.json');
+  }
+
+  async function saveSchool(data) {
+    await save('school.json', data);
+  }
+
+  async function upsertUser(user) {
+    const users = await loadUsers();
+    const idx = users.findIndex((u) => u.id === user.id);
+    if (idx >= 0) users[idx] = user;
+    else users.push(user);
+    await save('gebruikers.json', users);
+  }
+
+  // ── Session (machine-local, not synced via OneDrive) ──────────────────────
+  async function saveLastSession(subject, userId) {
+    const existing = (await window.rtti.readLocalSession()) ?? {};
+    await window.rtti.writeLocalSession({ ...existing, lastSubject: subject, lastUserId: userId });
+  }
+
+  async function loadLastSession() {
+    return await window.rtti.readLocalSession();
+  }
+
+  async function saveFilterState(userId, state) {
+    const existing = (await window.rtti.readLocalSession()) ?? {};
+    const filtersByUser = existing.filtersByUser ?? {};
+    filtersByUser[userId] = {
+      schoolsoorten: [...state.schoolsoorten],
+      jaarlagen: [...state.jaarlagen],
+      jaarlagenKlas: [...state.jaarlagenKlas],
+      eigenOnly: state.eigenOnly,
+    };
+    await window.rtti.writeLocalSession({ ...existing, filtersByUser });
+  }
+
+  async function loadFilterState(userId) {
+    const session = await window.rtti.readLocalSession();
+    return session?.filtersByUser?.[userId] ?? null;
   }
 
   // ── Path helpers ──────────────────────────────────────────────────────────
@@ -148,10 +209,10 @@ const Store = (() => {
   }
 
   async function loadGroups(year, subject) {
-    const key = `${year}/groups/${subject}`;
+    const key = subject ? `${year}/groups/${subject}` : `${year}/groups/__all__`;
     if (cache[key] !== undefined) return cache[key];
     const all = await window.rtti.readAllJson(`${year}/groups`);
-    cache[key] = all.filter((g) => g.subject === subject);
+    cache[key] = subject ? all.filter((g) => g.subject === subject) : all;
     return cache[key];
   }
 
@@ -166,10 +227,9 @@ const Store = (() => {
   async function loadYear(year, subject = _activeSubject) {
     await window.rtti.ensureYear(year);
     const tasks = [load(ypStudents(year))];
-    if (subject) {
-      tasks.push(loadExams(year, subject));
-      tasks.push(loadGroups(year, subject));
-    }
+    // subject === null means admin (all groups); subject === undefined means no subject yet
+    if (subject !== undefined) tasks.push(loadGroups(year, subject));
+    if (subject) tasks.push(loadExams(year, subject));
     await Promise.all(tasks);
     if (_years && !_years.includes(year)) {
       _years.push(year);
@@ -182,24 +242,34 @@ const Store = (() => {
     await migrate();
     _years = await window.rtti.listYears();
     await load('config.json');
+    await load('school.json');
     _years = await window.rtti.listYears();
   }
 
   async function initSubject(subject) {
-    setActiveSubject(subject);
     const year = getConfigSync().activeYear ?? currentSchoolYear();
-    await Promise.all([loadYear(year, subject), loadObservaties(subject)]);
+    if (isAdminActive()) {
+      // Admin sees all subjects — only preload students and all groups
+      await loadYear(year, null);
+    } else {
+      setActiveSubject(subject);
+      await Promise.all([loadYear(year, subject), loadObservaties(subject)]);
+    }
   }
 
   // ── Sync getters (safe after preload / loadYear / initSubject) ────────────
   function getConfigSync() {
     return cache['config.json'] ?? { activeYear: currentSchoolYear() };
   }
+  function getSchoolSync() {
+    return cache['school.json'] ?? {};
+  }
   function getStudentsSync(year) {
     return cache[ypStudents(year)] ?? [];
   }
-  function getGroupsSync(year, subject = _activeSubject) {
-    return cache[`${year}/groups/${subject}`] ?? [];
+  function getGroupsSync(year, subject = isAdminActive() ? null : _activeSubject) {
+    const key = subject ? `${year}/groups/${subject}` : `${year}/groups/__all__`;
+    return cache[key] ?? [];
   }
   function getExamsSync(year, subject = _activeSubject) {
     return cache[`${year}/exams/${subject}`] ?? [];
@@ -269,6 +339,8 @@ const Store = (() => {
       achternaam: student.achternaam ?? student.name ?? '',
       stamklas: student.stamklas ?? '',
       geslacht: student.geslacht ?? '',
+      jaarlaag: student.jaarlaag ?? '',
+      schoolsoort: student.schoolsoort ?? [],
     };
     const idx = list.findIndex((s) => s.id === flat.id);
     if (idx >= 0) list[idx] = { ...list[idx], ...flat };
@@ -286,6 +358,8 @@ const Store = (() => {
         achternaam: student.achternaam ?? student.name ?? '',
         stamklas: student.stamklas ?? '',
         geslacht: student.geslacht ?? '',
+        jaarlaag: student.jaarlaag ?? '',
+        schoolsoort: student.schoolsoort ?? [],
       };
       const idx = list.findIndex((s) => s.id === flat.id);
       if (idx >= 0) list[idx] = { ...list[idx], ...flat };
@@ -303,7 +377,7 @@ const Store = (() => {
   }
 
   // ── Groups (year-scoped, subject-filtered) ────────────────────────────────
-  async function getGroups(year, subject = _activeSubject) {
+  async function getGroups(year, subject = isAdminActive() ? null : _activeSubject) {
     return loadGroups(year, subject);
   }
 
@@ -770,6 +844,18 @@ const Store = (() => {
     );
   }
 
+  // Check all years × all subjects — used by admin to guard deletion.
+  async function studentHasAnyScores(studentId) {
+    const years = listYearsSync();
+    const subjects = Object.keys(SUBJECT_DISPLAY);
+    for (const year of years) {
+      for (const subject of subjects) {
+        if (await studentHasScores(studentId, year, subject)) return true;
+      }
+    }
+    return false;
+  }
+
   function obsIsUsedInAnyExam(obsId) {
     return Object.entries(cache).some(
       ([key, val]) =>
@@ -905,6 +991,18 @@ const Store = (() => {
     getObservatiesSync,
     getActiveSubject,
     setActiveSubject,
+    getActiveUser,
+    setActiveUser,
+    isAdminActive,
+    loadUsers,
+    upsertUser,
+    loadSchool,
+    saveSchool,
+    getSchoolSync,
+    saveLastSession,
+    loadLastSession,
+    saveFilterState,
+    loadFilterState,
     SUBJECT_DISPLAY,
     subjectFromGroupName,
     parseGroupName,
@@ -944,6 +1042,7 @@ const Store = (() => {
     setObservation,
     examHasScores,
     studentHasScores,
+    studentHasAnyScores,
     obsIsUsedInAnyExam,
     removeObsFromExamScores,
     getResitsSync,

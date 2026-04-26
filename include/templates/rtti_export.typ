@@ -7,7 +7,8 @@
 //   vragen: array of (
 //     label, rtti, rtti_color, score (or none), max,
 //     class_avg, class_pct, dot_color
-//   )
+//   ),
+//   observaties: array of (icon, naam, uitleg)
 // )
 
 #import "@preview/cetz:0.3.4": canvas, draw
@@ -134,7 +135,7 @@
   set text(size: 9pt)
 
   table(
-    columns: (1.4cm, 1.4cm, 1.4cm, 1.4cm, TRACK_W * 1cm + 1.2cm, 2.4cm),
+    columns: (1.4cm, 1.4cm, 1.4cm, 1.4cm, TRACK_W * 1cm + 1cm, 2.4cm),
     align:   (left + horizon, left + horizon, left + horizon, left + horizon, left + horizon, left + horizon),
     stroke:  (x, y) => if y == 0 { (bottom: 0.5pt + gray) } else { none },
     fill:    (x, y) => if y == 0 or calc.even(y) { white } else { rgb("#EDEEF0") },
@@ -178,6 +179,35 @@
   )
 }
 
+// ── Observations section ───────────────────────────────────────────────────────
+#let obs_section(observaties) = {
+  text(9pt, style: "italic", fill: gray.darken(30%))[Observaties]
+  v(0pt)
+
+  if observaties.len() == 0 {
+    [De docent heeft bij jou geen observaties genoteerd voor deze toets.]
+  } else {
+    [De docent heeft de volgende observaties genoteerd bij je toets:]
+    v(4pt)
+    set text(size: 9pt)
+    table(
+      columns: (1cm, 4cm, 1fr),
+      align:   (center + horizon, left + horizon, left + horizon),
+      stroke:  (x, y) => if y == 0 { (bottom: 0.5pt + gray) } else { none },
+      fill:    (x, y) => if y == 0 or calc.even(y) { white } else { rgb("#EDEEF0") },
+      inset:   (x: 4pt, y: 4pt),
+
+      [*Icoon*], [*Observatie*], [*Korte uitleg*],
+
+      ..observaties.map(o => (
+        text(size: 12pt)[#o.icon],
+        [#o.naam],
+        [#o.uitleg],
+      )).flatten()
+    )
+  }
+}
+
 // ── RTTI category fill styles ──────────────────────────────────────────────────
 // Each fill uses the RTTI color as background with a distinct hatch overlay
 // so the charts remain distinguishable when printed in greyscale.
@@ -188,17 +218,17 @@
 
 #let FILL_R = rgb("#5cb85c")
 
-#let FILL_T1 = pattern(size: (7pt, 7pt))[
+#let FILL_T1 = tiling(size: (7pt, 7pt))[
   #place(rect(fill: rgb("#5bc0de"), width: 7pt, height: 7pt))
   #place(dy: 3.5pt, line(length: 7pt, stroke: (paint: white, thickness: 1.5pt)))
 ]
 
-#let FILL_T2 = pattern(size: (7pt, 7pt))[
+#let FILL_T2 = tiling(size: (7pt, 7pt))[
   #place(rect(fill: rgb("#f0ad4e"), width: 7pt, height: 7pt))
   #place(line(start: (0pt, 7pt), end: (7pt, 0pt), stroke: (paint: white, thickness: 1.5pt)))
 ]
 
-#let FILL_I = pattern(size: (7pt, 7pt))[
+#let FILL_I = tiling(size: (7pt, 7pt))[
   #place(rect(fill: rgb("#d9534f"), width: 7pt, height: 7pt))
   #place(line(start: (0pt, 7pt), end: (7pt, 0pt), stroke: (paint: white, thickness: 1.5pt)))
   #place(line(start: (0pt, 0pt), end: (7pt, 7pt), stroke: (paint: white, thickness: 1.5pt)))
@@ -359,6 +389,8 @@
     #v(4pt)
     ]
     lollipop_chart(student.vragen, exam_info.global_max_points)
+    v(10pt)
+    obs_section(student.observaties)
     v(10pt)
     let totals = rtti_summary(student.vragen)
     grid(
