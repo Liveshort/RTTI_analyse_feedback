@@ -1,21 +1,37 @@
 // rtti_export.typ — RTTI rapport template
 // Wrapper calls: #show: setup  then  #render(exam_info, student_data)
 //
-// exam_info : (name: string, global_max_points: int)
+// exam_info : (name: string, global_max_points: int, n_term: float,
+//              uitleg_rtti: (R, T1, T2, I: string))
 // student_data : array of (
-//   name, student_nr, group, score, max_score, grade,
+//   name, student_nr, group, score, max_score, grade, grade_num (float or none),
 //   vragen: array of (
 //     label, rtti, rtti_color, score (or none), max,
 //     class_avg, class_pct, dot_color
 //   ),
-//   observaties: array of (icon, naam, uitleg)
+//   observaties: array of (icon, naam, uitleg),
+//   leeradvies_rows: array of (cat, score_str, advies)
 // )
 
 #import "@preview/cetz:0.3.4": canvas, draw
+#import "@preview/unify:0.8.0": num, unit, qty
+
+// Per-student footer state (updated at the start of each student in render)
+#let _footer_text = state("footer-text", "")
 
 // ── Document setup ─────────────────────────────────────────────────────────────
 #let setup(body) = {
-  set page(margin: 2cm)
+  set page(
+    margin: 2cm,
+    footer: context {
+      let txt = _footer_text.get()
+      if txt == "" { return }
+      let pg = counter(page).get().first()
+      set text(style: "italic", fill: gray.darken(20%), size: 8pt)
+      place(right, [#pg / 2])
+      align(center, txt)
+    }
+  )
   set text(font: "Libertinus Serif", size: 10pt)
   set heading(numbering: none)
   show heading.where(level: 1): it => block(
@@ -26,6 +42,17 @@
     above: 2pt, below: 6pt,
     text(fill: rgb("#1a5276"), size: 11pt, weight: "regular", it.body)
   )
+  // Decimal numbers in math: match both dot (7.2) and comma (7,2) variants,
+  // normalise to comma, and return a text-mode content block so the comma
+  // is NOT treated as a math comma (which would add auto thin-spacing).
+  show math.equation: it => {
+    show regex("[0-9]+[.,][0-9]+"): m => {
+      let s = m.text.replace(".", ",")
+      let i = s.position(",")
+      [#s.slice(0, i),#h(0pt)#s.slice(i + 1)]
+    }
+    it
+  }
   body
 }
 
@@ -187,8 +214,6 @@
   if observaties.len() == 0 {
     [De docent heeft bij jou geen observaties genoteerd voor deze toets.]
   } else {
-    [De docent heeft de volgende observaties genoteerd bij je toets:]
-    v(4pt)
     set text(size: 9pt)
     table(
       columns: (1cm, 4cm, 1fr),
@@ -197,7 +222,7 @@
       fill:    (x, y) => if y == 0 or calc.even(y) { white } else { rgb("#EDEEF0") },
       inset:   (x: 4pt, y: 4pt),
 
-      [*Icoon*], [*Observatie*], [*Korte uitleg*],
+      [*Afk.*], [*Observatie*], [*Korte uitleg*],
 
       ..observaties.map(o => (
         text(size: 12pt)[#o.icon],
@@ -206,6 +231,39 @@
       )).flatten()
     )
   }
+}
+
+// ── Shared eval scope for markup fields (num/unit/qty with Dutch defaults) ─────
+#let _eval_scope = (
+  num: num.with(thousandsep: " "),
+  unit: unit.with(per: "fraction-short"),
+  qty: qty.with(per: "fraction-short", thousandsep: " "),
+)
+
+// ── Leeradvies section ─────────────────────────────────────────────────────────
+#let leeradvies_section(rows) = {
+  text(9pt, style: "italic", fill: gray.darken(30%))[Leeradvies]
+
+  set text(size: 9pt)
+  table(
+    columns: (1cm, 2cm, 1fr),
+    align:   (center + horizon, left + horizon, left + horizon),
+    stroke:  (x, y) => if y == 0 { (bottom: 0.5pt + gray) } else { none },
+    fill:    (x, y) => if y == 0 or calc.even(y) { white } else { rgb("#EDEEF0") },
+    inset:   (x: 4pt, y: 4pt),
+
+    [*Cat.*], [*Score*], [*Leeradvies*],
+
+    ..rows.map(r => (
+      if r.cat == "R" or r.cat == "T1" or r.cat == "T2" {
+        text(9pt)[#r.cat]
+      } else {
+        text(12pt)[#r.cat]
+      },
+      [#r.score_str],
+      eval(r.advies, mode: "markup", scope: _eval_scope),
+    )).flatten()
+  )
 }
 
 // ── RTTI category fill styles ──────────────────────────────────────────────────
@@ -230,6 +288,12 @@
 
 #let FILL_I = tiling(size: (7pt, 7pt))[
   #place(rect(fill: rgb("#d9534f"), width: 7pt, height: 7pt))
+  #place(line(start: (0pt, 7pt), end: (7pt, 0pt), stroke: (paint: white, thickness: 1.5pt)))
+  #place(line(start: (0pt, 0pt), end: (7pt, 7pt), stroke: (paint: white, thickness: 1.5pt)))
+]
+
+#let FILL_HIST_HIGHLIGHT = tiling(size: (7pt, 7pt))[
+  #place(rect(fill: rgb("#2980b9"), width: 7pt, height: 7pt))
   #place(line(start: (0pt, 7pt), end: (7pt, 0pt), stroke: (paint: white, thickness: 1.5pt)))
   #place(line(start: (0pt, 0pt), end: (7pt, 7pt), stroke: (paint: white, thickness: 1.5pt)))
 ]
@@ -319,7 +383,7 @@
 // ── Bar chart: student RTTI scores as percentage correct ──────────────────────
 #let rtti_bar(totals) = {
   align(center)[
-    #text(9pt, style: "italic", fill: gray.darken(30%))[RTTI-scores]
+    #text(9pt, style: "italic", fill: gray.darken(30%))[Jouw RTTI-scores]
     #v(4pt)
     #canvas(length: 1cm, {
       import draw: rect, content, line
@@ -375,11 +439,199 @@
   ]
 }
 
+// ── RTTI uitleg section ────────────────────────────────────────────────────────
+#let rtti_uitleg_section(uitleg) = {
+  let cats = (
+    ("R",  "Reproductie",  uitleg.R),
+    ("T1", "Training",     uitleg.T1),
+    ("T2", "Transfer",     uitleg.T2),
+    ("I",  "Inzicht",      uitleg.I),
+  )
+
+  text(9pt, style: "italic", fill: gray.darken(30%))[Uitleg RTTI-categorieën]
+
+  set text(size: 9pt)
+  table(
+    columns: (1cm, 2.5cm, 1fr),
+    align:   (left + horizon, left + horizon, left + horizon),
+    stroke:  (x, y) => if y == 0 { (bottom: 0.5pt + gray) } else { none },
+    fill:    (x, y) => if y == 0 or calc.even(y) { white } else { rgb("#EDEEF0") },
+    inset:   (x: 4pt, y: 4pt),
+
+    [*Afk.*], [*Categorie*], [*Beschrijving*],
+
+    ..cats.map(c => {
+      let (afk, naam, tekst) = c
+      let beschrijving = if tekst == "" {
+        [—]
+      } else {
+        eval(tekst, mode: "markup", scope: _eval_scope)
+      }
+      (text(9pt)[#afk], [#naam], beschrijving)
+    }).flatten()
+  )
+}
+
+// ── Grade histogram ────────────────────────────────────────────────────────────
+// Shows a 12-bin histogram of all student grades for the exam, below the RTTI
+// charts on page 2. Skipped entirely when fewer than 3 grades are available.
+// The bin containing the current student's grade is highlighted in blue
+// crosshatch (only when grade ≥ 5,5). A congratulatory ranking message is
+// appended when the student falls in the top-third or top-two-thirds.
+
+#let grade_histogram(student_data, current_grade_num) = {
+  let all_grades = student_data.map(s => s.grade_num).filter(g => g != none)
+  if all_grades.len() < 10 { return }
+
+  // ── Bin counts ──────────────────────────────────────────────────────────────
+  let bins = (
+    all_grades.filter(g => g < 4.5).len(),
+    all_grades.filter(g => g >= 4.5 and g < 5.0).len(),
+    all_grades.filter(g => g >= 5.0 and g < 5.5).len(),
+    all_grades.filter(g => g >= 5.5 and g < 6.0).len(),
+    all_grades.filter(g => g >= 6.0 and g < 6.5).len(),
+    all_grades.filter(g => g >= 6.5 and g < 7.0).len(),
+    all_grades.filter(g => g >= 7.0 and g < 7.5).len(),
+    all_grades.filter(g => g >= 7.5 and g < 8.0).len(),
+    all_grades.filter(g => g >= 8.0 and g < 8.5).len(),
+    all_grades.filter(g => g >= 8.5 and g < 9.0).len(),
+    all_grades.filter(g => g >= 9.0 and g < 9.5).len(),
+    all_grades.filter(g => g >= 9.5).len(),
+  )
+
+  let bin_labels = ("<4,5", "<5,0", "<5,5", "<6,0", "<6,5", "<7,0",
+                    "<7,5", "<8,0", "<8,5", "<9,0", "<9,5", "\u{2264}10")
+
+  // ── Which bin does the current student fall in? ─────────────────────────────
+  let student_bin = if current_grade_num == none { none }
+    else if current_grade_num < 4.5 { 0 }
+    else if current_grade_num < 5.0 { 1 }
+    else if current_grade_num < 5.5 { 2 }
+    else if current_grade_num < 6.0 { 3 }
+    else if current_grade_num < 6.5 { 4 }
+    else if current_grade_num < 7.0 { 5 }
+    else if current_grade_num < 7.5 { 6 }
+    else if current_grade_num < 8.0 { 7 }
+    else if current_grade_num < 8.5 { 8 }
+    else if current_grade_num < 9.0 { 9 }
+    else if current_grade_num < 9.5 { 10 }
+    else { 11 }
+
+  // ── Y-axis scaling ──────────────────────────────────────────────────────────
+  let max_count = bins.fold(0, (a, b) => calc.max(a, b))
+  let y_max = calc.max(1, max_count)
+  let tick_step = if y_max <= 5 { 1 }
+    else if y_max <= 10 { 2 }
+    else if y_max <= 20 { 5 }
+    else { 10 }
+
+  // ── Canvas layout constants ─────────────────────────────────────────────────
+  let cv_w = 17.0
+  let cv_h = 6.0
+  let lm   = 1.0   // left margin (y-axis labels)
+  let bm   = 1.0   // bottom margin (space for 9pt rotated x-labels)
+  let tm   = 0.4   // top margin
+  let rm   = 0.2   // right margin
+  let plot_w = cv_w - lm - rm
+  let plot_h = cv_h - bm - tm
+  let slot_w = plot_w / 12.0
+  let bar_w  = 1.0
+  let bar_offset = (slot_w - bar_w) / 2.0
+
+  text(9pt, style: "italic", fill: gray.darken(30%))[Verdeling toetscijfers]
+  v(4pt)
+
+  canvas(length: 1cm, {
+    import draw: rect, line, content
+
+    // Invisible bounding box
+    rect((0, 0), (cv_w, cv_h), stroke: none, fill: none)
+
+    // Y-axis gridlines and labels
+    let tick = tick_step
+    while tick <= y_max {
+      let y = float(tick) / float(y_max) * plot_h + bm
+      line(
+        (lm, y), (lm + plot_w, y),
+        stroke: (paint: gray.lighten(50%), thickness: 0.4pt, dash: "dashed"),
+      )
+      content((lm - 0.08, y), text(9pt, fill: gray.darken(10%))[#tick], anchor: "east")
+      tick = tick + tick_step
+    }
+
+    // Baseline
+    line(
+      (lm, bm), (lm + plot_w, bm),
+      stroke: (paint: gray.lighten(10%), thickness: 0.6pt),
+    )
+
+    // Vertical dividers between bins
+    for i in range(0, 13) {
+      let x = lm + float(i) * slot_w
+      line(
+        (x, bm), (x, bm + plot_h),
+        stroke: (paint: gray.lighten(40%), thickness: 0.4pt),
+      )
+    }
+
+    // Bars
+    for (i, count) in bins.enumerate() {
+      let x0 = lm + float(i) * slot_w + bar_offset
+      let x1 = x0 + bar_w
+      let cx = (x0 + x1) / 2.0
+      let bar_h = if y_max > 0 { float(count) / float(y_max) * plot_h } else { 0.0 }
+
+      let highlight = student_bin != none and i == student_bin and current_grade_num != none and current_grade_num >= 5.5
+      let fill = if highlight { FILL_HIST_HIGHLIGHT } else { gray.darken(20%) }
+
+      if count > 0 {
+        rect((x0, bm), (x1, bm + bar_h), fill: fill, stroke: none)
+        content(
+          (cx, bm + bar_h + 0.12),
+          text(7pt)[#count],
+          anchor: "south",
+        )
+      }
+
+      // X-axis label, rotated −45°
+      // anchor "east" = lower-right tip of the rotated text; placing it well
+      // below the baseline ensures the text body clears the plot area.
+      content(
+        (cx + 0.2, bm - 0.75),
+        text(9pt)[#bin_labels.at(i)],
+        angle: -45deg,
+        anchor: "east",
+      )
+    }
+  })
+
+  // ── Ranking message ─────────────────────────────────────────────────────────
+  if current_grade_num != none {
+    let sorted_desc = all_grades.sorted().rev()
+    let n = sorted_desc.len()
+    let idx = sorted_desc.position(g => g == current_grade_num)
+    if idx != none {
+      if float(idx) < (float(n) / 10.0) - 0.99 {
+        v(4pt)
+        text(9pt)[Gefeliciteerd! Je resultaat hoort bij de beste 33% van de toetsresultaten! \u{1F451}]
+      } else if float(idx) < (float(n) * 2.0 / 10.0) - 0.99 {
+        v(4pt)
+        text(9pt)[Gefeliciteerd! Je resultaat hoort bij de beste 67% van de toetsresultaten! \u{1F948}]
+      }
+    }
+  }
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────────
 #let render(exam_info, student_data) = {
   let n = student_data.len()
   for (i, student) in student_data.enumerate() {
-    [= Toetsanalyse #exam_info.name
+    // Reset page counter to 1 and set footer text for this student
+    counter(page).update(1)
+    _footer_text.update(
+      exam_info.subject_display + " " + exam_info.name + " \u{2014} " + student.name
+    )
+    [= Toetsanalyse #exam_info.subject_display #exam_info.name
     == #student.group — #student.name (#student.student_nr)
 
     #v(8pt)
@@ -392,6 +644,10 @@
     v(10pt)
     obs_section(student.observaties)
     v(10pt)
+    leeradvies_section(student.leeradvies_rows)
+    pagebreak()
+    rtti_uitleg_section(exam_info.uitleg_rtti)
+    v(18pt)
     let totals = rtti_summary(student.vragen)
     grid(
       columns: (1fr, 1fr),
@@ -399,6 +655,8 @@
       rtti_pie(totals),
       rtti_bar(totals),
     )
+    v(10pt)
+    grade_histogram(student_data, student.grade_num)
     if i < n - 1 { pagebreak() }
   }
 }

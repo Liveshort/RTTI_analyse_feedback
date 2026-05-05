@@ -1,6 +1,6 @@
 # RTTI App
 
-Grade analysis tool for RTTI (Reproductie / Toepassen 1 / Toepassen 2 / Inzicht).
+Grade analysis tool for RTTI (Reproductie / Training / Transfer / Inzicht).
 
 ## Development setup
 

@@ -11,10 +11,20 @@ import { gradeStatHtml } from '../utils/grades.js';
 import { openGroupStudentsModal } from './leerlingen.js';
 
 // ── Modal imports (used directly in this screen file) ───────────────────────
-import { openGroupModal, deleteGroup, openGroupCSVImport } from '../modals/groep-edit.js';
+import {
+  openGroupModal,
+  deleteGroup,
+  openGroupCSVImport,
+  openGroupAssignmentCSVImport,
+} from '../modals/groep-edit.js';
 
 // ── Re-exports for backward compatibility ───────────────────────────────────
-export { openGroupModal, deleteGroup, openGroupCSVImport } from '../modals/groep-edit.js';
+export {
+  openGroupModal,
+  deleteGroup,
+  openGroupCSVImport,
+  openGroupAssignmentCSVImport,
+} from '../modals/groep-edit.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCREEN: Groepen
@@ -32,11 +42,14 @@ export function renderGroepen() {
   const isAdmin = Store.isAdminActive();
   const btnAdd = document.getElementById('btn-add-group');
   const btnImport = document.getElementById('btn-import-groups');
+  const btnImportAssignment = document.getElementById('btn-import-group-assignment');
   btnAdd.classList.toggle('hidden', !isAdmin);
   btnImport.classList.toggle('hidden', !isAdmin);
+  btnImportAssignment.classList.toggle('hidden', !isAdmin);
   if (isAdmin) {
     btnAdd.onclick = () => openGroupModal(null);
     btnImport.onclick = () => openGroupCSVImport();
+    btnImportAssignment.onclick = () => openGroupAssignmentCSVImport();
   }
   renderGroepenForYear(SEL.groupsYear.getValue());
 }

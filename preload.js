@@ -49,4 +49,7 @@ contextBridge.exposeInMainWorld('rtti', {
   // Returns { success, pdfPath } or { success: false, error }.
   renderRapportPdf: (examId, students, examInfo) =>
     ipcRenderer.invoke('app:renderRapportPdf', examId, students, examInfo),
+
+  // Open a file with the OS default application (e.g. to print a PDF).
+  openPath: (absPath) => ipcRenderer.invoke('shell:openPath', absPath),
 });

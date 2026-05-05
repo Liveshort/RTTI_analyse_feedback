@@ -394,6 +394,27 @@ export async function deleteGroup(id) {
   renderGroepen();
 }
 
+const VALID_SCHOOLSOORTEN = [
+  'Vmbo-bb',
+  'Vmbo-kb',
+  'Vmbo-gl',
+  'Vmbo-tl',
+  'Havo',
+  'Vwo',
+  'Gymnasium',
+];
+const VAKKEN_MAP = {
+  bio: 'bio',
+  biologie: 'bio',
+  nat: 'nat',
+  natuurkunde: 'nat',
+  schk: 'schk',
+  scheikunde: 'schk',
+  wi: 'wi',
+  wiskunde: 'wi',
+};
+const VALID_JAARLAGEN = ['1', '2', '3', '4', '5', '6'];
+
 export async function openGroupCSVImport() {
   const cfg = await Store.getConfig();
   const existingYears = Store.listYearsSync();
@@ -401,11 +422,13 @@ export async function openGroupCSVImport() {
   const year = await askSchoolYear(cfg.activeYear, existingYears, ui);
   if (!year) return;
 
+  const users = await Store.loadUsers();
+
   showModal(
     `
     <h3>Groepen importeren — ${escHtml(year)}</h3>
     <p class="muted" style="margin-bottom:12px">
-      Verwachte kolommen: <code>Jaarlaag, Groep, Leerlingnummer, Schoolsoort</code>
+      Verwachte kolommen: <code>Naam, Schoolsoort, Vak, Leerjaar, Docent</code>
     </p>
     <div class="form-group">
       <label>CSV-bestand</label>
@@ -418,60 +441,187 @@ export async function openGroupCSVImport() {
     </div>
   `,
     (el) => {
-      let groupMap = null;
+      let toImport = null;
+
       el.querySelector('#f-csv-groups').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
         const { rows } = parseCSV(await file.text());
-        groupMap = {};
+        toImport = [];
+
         for (const r of rows) {
-          const jaarlaag = String(r['Jaarlaag'] ?? r['jaarlaag'] ?? '').trim();
-          const naam = (r['Groep'] ?? r['groep'] ?? '').trim();
-          const llnr = Number(r['Leerlingnummer'] ?? r['leerlingnummer']);
-          const ssRaw = (r['Schoolsoort'] ?? r['schoolsoort'] ?? '').trim();
-          const schoolsoort = ssRaw
-            ? ssRaw
-                .split(',')
-                .map((s) => s.trim())
+          const naam = (r['Naam'] ?? '').trim();
+          const schoolsoortRaw = (r['Schoolsoort'] ?? '').trim();
+          const vakRaw = (r['Vak'] ?? '').trim();
+          const leerjaarRaw = (r['Leerjaar'] ?? '').trim();
+          const docentRaw = (r['Docent'] ?? '').trim();
+
+          if (!naam) {
+            toast('Rij overgeslagen: Naam is verplicht.', 'error');
+            continue;
+          }
+
+          const matchedSS = VALID_SCHOOLSOORTEN.find(
+            (ss) => ss.toLowerCase() === schoolsoortRaw.toLowerCase()
+          );
+          if (!matchedSS) {
+            toast(
+              `Rij overgeslagen (${escHtml(naam)}): ongeldige Schoolsoort "${escHtml(schoolsoortRaw)}".`,
+              'error'
+            );
+            continue;
+          }
+
+          const matchedVak = VAKKEN_MAP[vakRaw.toLowerCase()];
+          if (!matchedVak) {
+            toast(
+              `Rij overgeslagen (${escHtml(naam)}): ongeldig Vak "${escHtml(vakRaw)}".`,
+              'error'
+            );
+            continue;
+          }
+
+          if (!VALID_JAARLAGEN.includes(leerjaarRaw)) {
+            toast(
+              `Rij overgeslagen (${escHtml(naam)}): ongeldig Leerjaar "${escHtml(leerjaarRaw)}".`,
+              'error'
+            );
+            continue;
+          }
+
+          let docentId = null;
+          if (docentRaw) {
+            const matchedUser = users.find((u) => {
+              const fullName = [u.voornaam, u.tussenvoegsel, u.achternaam]
                 .filter(Boolean)
-            : [];
-          if (!naam || !llnr) continue;
-          if (!groupMap[naam])
-            groupMap[naam] = { jaarlaag, schoolsoort, name: naam, student_ids: [] };
-          if (!groupMap[naam].student_ids.includes(llnr)) groupMap[naam].student_ids.push(llnr);
-        }
-        const entries = Object.values(groupMap);
-        el.querySelector('#csv-grp-preview').innerHTML =
-          entries.length === 0
-            ? '<p class="hint">Geen groepen gevonden.</p>'
-            : `<p style="margin:8px 0 4px"><strong>${entries.length}</strong> groepen:</p>
-           <table class="preview-table">
-             <thead><tr><th>Groep</th><th>Jaarlaag</th><th>Leerlingen</th></tr></thead>
-             <tbody>${entries
-               .map(
-                 (g) =>
-                   `<tr><td>${escHtml(g.name)}</td><td>${escHtml(g.jaarlaag)}</td><td>${g.student_ids.length}</td></tr>`
-               )
-               .join('')}</tbody></table>`;
-        el.querySelector('#f-csv-grp-import').disabled = entries.length === 0;
-      });
-      el.querySelector('#f-csv-grp-import').addEventListener('click', async () => {
-        if (!groupMap) return;
-        const subject = Store.getActiveSubject();
-        const toSave = Object.values(groupMap).map((g) => {
-          const parsed = Store.parseGroupName(g.name, subject);
-          return {
-            id: Store.makeGroupId(g.name, year),
-            name: g.name,
-            jaarlaag: parsed.jaarlaag ?? g.jaarlaag,
-            schoolsoort: g.schoolsoort,
+                .join(' ');
+              return fullName.toLowerCase() === docentRaw.toLowerCase();
+            });
+            docentId = matchedUser ? matchedUser.id : null;
+          }
+
+          const parsed = Store.parseGroupName(naam, matchedVak);
+          toImport.push({
+            id: Store.makeGroupId(naam, year),
+            name: naam,
+            jaarlaag: leerjaarRaw,
+            subject: matchedVak,
+            schoolsoort: [matchedSS],
             subcategory: parsed.subcategory ?? undefined,
-            student_ids: g.student_ids,
-          };
-        });
-        await Store.upsertGroups(toSave, year);
+            docenten: docentId ? [docentId] : [],
+            student_ids: [],
+          });
+        }
+
+        el.querySelector('#csv-grp-preview').innerHTML =
+          toImport.length === 0
+            ? '<p class="hint">Geen geldige groepen gevonden.</p>'
+            : `<p style="margin:8px 0 4px"><strong>${toImport.length}</strong> groepen klaar om te importeren:</p>
+               <table class="preview-table">
+                 <thead><tr><th>Naam</th><th>Schoolsoort</th><th>Vak</th><th>Leerjaar</th></tr></thead>
+                 <tbody>${toImport
+                   .map(
+                     (g) =>
+                       `<tr><td>${escHtml(g.name)}</td><td>${escHtml(g.schoolsoort.join(', '))}</td><td>${escHtml(g.subject)}</td><td>${escHtml(String(g.jaarlaag))}</td></tr>`
+                   )
+                   .join('')}</tbody>
+               </table>`;
+        el.querySelector('#f-csv-grp-import').disabled = toImport.length === 0;
+      });
+
+      el.querySelector('#f-csv-grp-import').addEventListener('click', async () => {
+        if (!toImport || toImport.length === 0) return;
+        await Store.upsertGroups(toImport, year);
         closeModal();
-        toast(`${toSave.length} groepen geïmporteerd voor ${year}.`, 'success');
+        toast(`${toImport.length} groepen geïmporteerd voor ${year}.`, 'success');
+        renderGroepen();
+      });
+    }
+  );
+}
+
+export async function openGroupAssignmentCSVImport() {
+  const cfg = await Store.getConfig();
+  const existingYears = Store.listYearsSync();
+  const ui = { showModal, closeModal, toast, overlay: overlayElement };
+  const year = await askSchoolYear(cfg.activeYear, existingYears, ui);
+  if (!year) return;
+
+  showModal(
+    `
+    <h3>Groepsindeling importeren — ${escHtml(year)}</h3>
+    <p class="muted" style="margin-bottom:12px">
+      Verwachte kolommen: <code>Naam, Leerlingnummer</code>
+    </p>
+    <div class="form-group">
+      <label>CSV-bestand</label>
+      <input type="file" id="f-csv-assignment" accept=".csv,.txt" />
+    </div>
+    <div id="csv-assignment-preview"></div>
+    <div class="form-actions" style="margin-top:12px">
+      <button class="btn-primary" id="f-csv-assignment-import" disabled>Importeren</button>
+      <button class="btn-secondary" data-close-modal="1">Annuleren</button>
+    </div>
+  `,
+    (el) => {
+      let assignments = null;
+
+      el.querySelector('#f-csv-assignment').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const { rows } = parseCSV(await file.text());
+
+        const groups = Store.getGroupsSync(year, null);
+        const students = Store.getStudentsSync(year);
+        assignments = [];
+
+        for (const r of rows) {
+          const naam = (r['Naam'] ?? '').trim();
+          const leerlingnummerRaw = (r['Leerlingnummer'] ?? '').trim();
+
+          const group = groups.find((g) => g.name === naam);
+          if (!group) {
+            toast(`Groep met ${escHtml(naam)} bestaat niet.`, 'error');
+            continue;
+          }
+
+          const student = students.find((s) => String(s.id) === leerlingnummerRaw);
+          if (!student) {
+            toast(
+              `Leerling met leerlingnummer ${escHtml(leerlingnummerRaw)} bestaat niet.`,
+              'error'
+            );
+            continue;
+          }
+
+          assignments.push({ groupId: group.id, studentId: student.id });
+        }
+
+        el.querySelector('#csv-assignment-preview').innerHTML =
+          assignments.length === 0
+            ? '<p class="hint">Geen geldige koppelingen gevonden.</p>'
+            : `<p style="margin:8px 0 4px"><strong>${assignments.length}</strong> koppelingen klaar om te importeren.</p>`;
+        el.querySelector('#f-csv-assignment-import').disabled = assignments.length === 0;
+      });
+
+      el.querySelector('#f-csv-assignment-import').addEventListener('click', async () => {
+        if (!assignments || assignments.length === 0) return;
+
+        const byGroup = {};
+        for (const { groupId, studentId } of assignments) {
+          (byGroup[groupId] ??= new Set()).add(studentId);
+        }
+
+        const allGroups = await Store.getGroups(year, null);
+        for (const [groupId, studentIds] of Object.entries(byGroup)) {
+          const group = allGroups.find((g) => g.id === groupId);
+          if (!group) continue;
+          const newIds = [...new Set([...group.student_ids, ...studentIds])];
+          await Store.upsertGroup({ ...group, student_ids: newIds }, year);
+        }
+
+        closeModal();
+        toast(`Groepsindelingen geïmporteerd voor ${year}.`, 'success');
         renderGroepen();
       });
     }

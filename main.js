@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -310,6 +310,9 @@ ipcMain.handle('app:renderRapportPdf', (_event, _examId, students, examInfo) => 
     });
   });
 });
+
+// Open a file with the system default application (e.g. PDF in Acrobat/Edge).
+ipcMain.handle('shell:openPath', (_event, absPath) => shell.openPath(absPath));
 
 // ---------------------------------------------------------------------------
 // Window

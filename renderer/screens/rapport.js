@@ -118,6 +118,96 @@ function assembleVragen(exam, questionScores, allQuestionScores) {
   });
 }
 
+// ── Subject display name ──────────────────────────────────────────────────────
+
+const WI_SUB_DISPLAY = {
+  wisob: 'Wiskunde',
+  wisa: 'Wiskunde A',
+  wisb: 'Wiskunde B',
+  wisc: 'Wiskunde C',
+  wisd: 'Wiskunde D',
+};
+
+function subjectDisplayName(subject) {
+  return WI_SUB_DISPLAY[subject] ?? Store.SUBJECT_DISPLAY[subject] ?? subject;
+}
+
+// ── Leeradvies helpers ────────────────────────────────────────────────────────
+
+function calcCategoryTotals(vragen) {
+  const totals = {
+    R: { scored: 0, max: 0 },
+    T1: { scored: 0, max: 0 },
+    T2: { scored: 0, max: 0 },
+  };
+  for (const q of vragen) {
+    if (q.kind !== 'normal') continue;
+    if (!totals[q.rtti]) continue;
+    totals[q.rtti].scored += q.score ?? 0;
+    totals[q.rtti].max += q.max;
+  }
+  return totals;
+}
+
+function getScoreBracket(scored, max, grenzen) {
+  const pct = (scored / max) * 100;
+  if (pct < grenzen.laag_midden) return 'laag';
+  if (pct < grenzen.midden_hoog) return 'midden';
+  return 'hoog';
+}
+
+function fmtNum(n) {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1).replace('.', ',');
+}
+
+/**
+ * Validates that a string intended for Typst eval() won't cause a compile crash.
+ * The most common issue is an unclosed math delimiter ($). If detected, the $
+ * signs are escaped and a red warning is prepended so the PDF renders with an
+ * indicator rather than failing to compile entirely.
+ */
+function sanitizeTypstMarkup(text) {
+  const dollarCount = (text.match(/\$/g) ?? []).length;
+  if (dollarCount % 2 !== 0) {
+    const escaped = text.replace(/\$/g, '\\$');
+    return `#text(fill: red, weight: "bold")[$-teken niet gesloten — controleer de tekst: ] ${escaped}`;
+  }
+  return text;
+}
+
+function buildLeeradviesRows(vragen, adviesData, observaties) {
+  const rows = [];
+  const totals = calcCategoryTotals(vragen);
+
+  for (const cat of ['R', 'T1', 'T2']) {
+    const { scored, max } = totals[cat];
+    if (max === 0) continue;
+
+    const pct = Math.round((scored / max) * 100);
+    const score_str = `${fmtNum(scored)} / ${max} (${pct}%)`;
+
+    let advies = '—';
+    if (adviesData) {
+      const bracket = getScoreBracket(scored, max, adviesData.grenswaarden[cat]);
+      const text = (adviesData.leeradvies[cat]?.[bracket] ?? '').trim();
+      advies = text ? sanitizeTypstMarkup(text) : '—';
+    }
+
+    rows.push({ cat, score_str, advies });
+  }
+
+  for (const obs of observaties) {
+    const obsAdvies = obs.leeradvies.trim();
+    rows.push({
+      cat: obs.icon,
+      score_str: '',
+      advies: obsAdvies ? sanitizeTypstMarkup(obsAdvies) : '—',
+    });
+  }
+
+  return rows;
+}
+
 // ── Main generate function ─────────────────────────────────────────────────────
 
 export async function generateRapport(examId) {
@@ -166,7 +256,12 @@ export async function generateRapport(examId) {
         const observaties = obsIds
           .map((id) => allObs.find((o) => o.id === id))
           .filter(Boolean)
-          .map((o) => ({ icon: o.icon, naam: o.naam, uitleg: o.uitleg }));
+          .map((o) => ({
+            icon: o.icon,
+            naam: o.naam,
+            uitleg: o.uitleg,
+            leeradvies: o.leeradvies ?? '',
+          }));
         return { student: s, group, scored, normalMax, grade, questionScores, observaties };
       })
     )
@@ -185,22 +280,38 @@ export async function generateRapport(examId) {
     ? Math.max(...exam.questions.map((q) => q.max_points))
     : 1;
 
-  const studentData = entries.map((e) => ({
-    name: Store.fullName(e.student),
-    student_nr: String(e.student.id),
-    group: e.group?.name ?? '\u2014',
-    score: e.scored,
-    max_score: e.normalMax,
-    grade:
-      e.grade !== null ? (Math.round(e.grade * 10) / 10).toFixed(1).replace('.', ',') : '\u2014',
-    vragen: assembleVragen(exam, e.questionScores, allQuestionScores),
-    observaties: e.observaties,
-  }));
+  // Load leeradvies data once for this exam (subject + jaarlaag uniquely identify the file)
+  const adviesData =
+    (await window.rtti.readJson(rttiExplFilePath(subject, exam.jaarlaag))) ?? defaultTabData();
+
+  const studentData = entries.map((e) => {
+    const vragen = assembleVragen(exam, e.questionScores, allQuestionScores);
+    return {
+      name: Store.fullName(e.student),
+      student_nr: String(e.student.id),
+      group: e.group?.name ?? '\u2014',
+      score: e.scored,
+      max_score: e.normalMax,
+      grade:
+        e.grade !== null ? (Math.round(e.grade * 10) / 10).toFixed(1).replace('.', ',') : '\u2014',
+      grade_num: e.grade !== null ? Math.round(e.grade * 10) / 10 : null,
+      vragen,
+      observaties: e.observaties,
+      leeradvies_rows: buildLeeradviesRows(vragen, adviesData, e.observaties),
+    };
+  });
 
   const examInfo = {
     name: exam?.title ?? '',
+    subject_display: subjectDisplayName(subject),
     global_max_points: globalMax,
     n_term: exam?.n_term ?? 1,
+    uitleg_rtti: {
+      R: adviesData.uitleg?.R ?? '',
+      T1: adviesData.uitleg?.T1 ?? '',
+      T2: adviesData.uitleg?.T2 ?? '',
+      I: adviesData.uitleg?.I ?? '',
+    },
   };
 
   let result;
@@ -212,7 +323,7 @@ export async function generateRapport(examId) {
   }
 
   if (!result.success) {
-    content.innerHTML = `<p class="hint" style="color:var(--danger)">Compilatiefout: ${result.error}</p>`;
+    content.innerHTML = `<pre class="hint rapport-error">${result.error.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
     // D — error toast
     toast('Compilatiefout bij het genereren van het rapport.', 'error');
     return;
@@ -220,7 +331,15 @@ export async function generateRapport(examId) {
 
   // Convert Windows backslashes and build a file:// URL
   const pdfUrl = 'file:///' + result.pdfPath.replace(/\\/g, '/');
-  content.innerHTML = `<iframe class="rapport-pdf-frame" src="${pdfUrl}"></iframe>`;
+  const absPath = result.pdfPath;
+  content.innerHTML = `
+    <div class="rapport-pdf-toolbar">
+      <button class="btn btn-secondary btn-sm" id="btn-rapport-open">Openen / afdrukken\u2026</button>
+    </div>
+    <iframe class="rapport-pdf-frame" src="${pdfUrl}"></iframe>`;
+  document.getElementById('btn-rapport-open').addEventListener('click', () => {
+    window.rtti.openPath(absPath);
+  });
 
   // D — success toast
   toast('Rapport gegenereerd.', 'success');
