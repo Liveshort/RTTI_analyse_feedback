@@ -23,12 +23,21 @@
 #let setup(body) = {
   set page(
     margin: 2cm,
+    background: place(
+      bottom + right,
+      dx: -0.5cm,
+      dy: -0.5cm,
+      box(width: 3.5cm, height: 3.5cm, clip: true)[
+        #image("/data/fotos/school-watermerk.svg", width: 3.5cm, height: 3.5cm, fit: "contain")
+        #place(top + left, rect(width: 3.5cm, height: 3.5cm, fill: white.transparentize(20%)))
+      ]
+    ),
     footer: context {
       let txt = _footer_text.get()
       if txt == "" { return }
       let pg = counter(page).get().first()
       set text(style: "italic", fill: gray.darken(20%), size: 8pt)
-      place(right, [#pg / 2])
+      place(left, [#pg / 2])
       align(center, txt)
     }
   )

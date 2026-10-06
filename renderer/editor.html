@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' https://esm.sh; style-src 'unsafe-inline' https://cdn.jsdelivr.net; connect-src https://esm.sh; frame-src 'self'; worker-src blob:; img-src data: blob:;"
+    />
+    <title>Opdracht bewerken</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 14px;
+        background: #f4f6f9;
+        color: #2c3e50;
+      }
+
+      /* ── Topbar — mirrors the main app's #topbar ──────────────────────────── */
+      #editor-topbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #2c3e50;
+        color: #fff;
+        padding: 0 20px;
+        height: 50px;
+        flex-shrink: 0;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      }
+
+      #btn-app-title {
+        font-weight: 700;
+        font-size: 16px;
+        letter-spacing: 0.5px;
+        margin-left: -14px;
+        margin-right: 8px;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        background: transparent;
+        border: none;
+        color: #fff;
+        cursor: pointer;
+        padding: 0 14px;
+        height: 50px;
+        white-space: nowrap;
+        transition: background 0.15s;
+      }
+
+      #btn-app-title:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      #editor-title {
+        font-size: 13px;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        color: rgba(255, 255, 255, 0.7);
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #editor-status {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+        white-space: nowrap;
+      }
+
+      /* ── User badge (mini) — mirrors .user-badge-mini in style.css ─────────── */
+      #editor-badge-btn {
+        width: 30px;
+        height: 30px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        border: 2px solid var(--badge-color, #888);
+        background: #fff;
+        color: #2c3e50;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        padding: 0;
+      }
+
+      #editor-badge-btn.badge-circle {
+        border-radius: 50%;
+      }
+
+      #editor-badge-btn.badge-square {
+        border-radius: 4px;
+      }
+
+      /* Shrink long abbreviations so they stay inside the badge */
+      #editor-badge-btn[data-len='4'] {
+        font-size: 0.56rem;
+      }
+
+      #editor-badge-btn[data-len='5'] {
+        font-size: 0.46rem;
+        letter-spacing: -0.02em;
+      }
+
+      #editor-badge-btn:hover {
+        opacity: 0.8;
+      }
+
+      /* ── Toolbar ─────────────────────────────────────────────────────────── */
+      #editor-toolbar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 5px 12px;
+        background: #f0f2f5;
+        border-bottom: 1px solid #d0d5de;
+        flex-shrink: 0;
+        position: relative;
+        z-index: 10;
+      }
+
+      .tb-group {
+        display: flex;
+        align-items: center;
+        border-radius: 3px;
+        overflow: hidden;
+      }
+
+      .tb-btn {
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 1px solid #b8c0cc;
+        background: #fff;
+        color: #2c3e50;
+        font-size: 13px;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0;
+        transition:
+          background 0.1s,
+          color 0.1s;
+        flex-shrink: 0;
+        line-height: 1;
+      }
+
+      .tb-btn:hover {
+        background: #e8edf4;
+      }
+
+      .tb-btn:active,
+      .tb-btn.active {
+        background: #4a90d9;
+        color: #fff;
+        border-color: #357abd;
+        z-index: 1;
+      }
+
+      /* Collapse shared borders between adjacent buttons */
+      .tb-group > .tb-btn + .tb-btn {
+        margin-left: -1px;
+      }
+
+      /* Math group responsive layout */
+      #tb-math .tb-math-more {
+        display: none;
+      }
+      .tb-math-compact #tb-math .tb-math-extra {
+        display: none;
+      }
+      .tb-math-compact #tb-math .tb-math-more {
+        display: flex;
+      }
+
+      .tb-divider {
+        width: 1px;
+        height: 18px;
+        background: #c0c8d4;
+        flex-shrink: 0;
+        margin: 0 2px;
+      }
+
+      /* Popup menus */
+      .tb-popup {
+        position: absolute;
+        top: calc(100% + 2px);
+        left: 0;
+        z-index: 200;
+        background: #fff;
+        border: 1px solid #d0d5de;
+        border-radius: 4px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+        padding: 4px;
+      }
+
+      .tb-popup-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 28px);
+        gap: 2px;
+      }
+
+      /* Symbol picker panel */
+      .tb-symbol-panel {
+        width: 300px;
+      }
+
+      .tb-symbol-search {
+        width: 100%;
+        padding: 5px 8px;
+        font-size: 12px;
+        font-family: inherit;
+        border: 1px solid #d0d5de;
+        border-radius: 3px;
+        margin-bottom: 5px;
+        outline: none;
+      }
+
+      .tb-symbol-search:focus {
+        border-color: #4a90d9;
+      }
+
+      .tb-symbol-grid {
+        display: grid;
+        grid-template-columns: repeat(8, 28px);
+        gap: 1px;
+        max-height: 280px;
+        overflow-y: auto;
+      }
+
+      .tb-symbol-btn {
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 1px solid transparent;
+        background: transparent;
+        cursor: pointer;
+        border-radius: 3px;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.1s;
+      }
+
+      .tb-symbol-btn:hover {
+        background: #e8edf4;
+        border-color: #b8c0cc;
+      }
+
+      .tb-symbol-hint {
+        font-size: 11px;
+        color: #7f8c8d;
+        padding: 4px 2px 2px;
+        min-height: 18px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* Reference picker */
+      .tb-ref-panel {
+        width: 240px;
+      }
+
+      .tb-ref-list {
+        max-height: 220px;
+        overflow-y: auto;
+      }
+
+      .tb-ref-item {
+        width: 100%;
+        text-align: left;
+        padding: 6px 10px;
+        border: none;
+        background: none;
+        font-size: 13px;
+        font-family: inherit;
+        cursor: pointer;
+        border-radius: 3px;
+        display: block;
+        color: #2c3e50;
+      }
+
+      .tb-ref-item:hover {
+        background: #e8edf4;
+      }
+
+      .tb-ref-empty {
+        padding: 8px 10px;
+        font-size: 12px;
+        color: #7f8c8d;
+        font-style: italic;
+      }
+
+      #editor-body {
+        display: flex;
+        width: 100%;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      #cm-container {
+        width: 50%;
+        height: 100%;
+        overflow: auto;
+        border-right: 1px solid #d8d8d8;
+        background: #ffffff;
+        /* CodeMirror fills this */
+      }
+
+      /* ── CodeMirror light theme ──────────────────────────────────────────────── */
+      #cm-container .cm-editor {
+        height: 100%;
+        font-size: 14px;
+        background: #ffffff;
+        color: #24292e;
+      }
+
+      #cm-container .cm-scroller {
+        overflow: auto;
+        font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      }
+
+      #cm-container .cm-content {
+        caret-color: #24292e;
+      }
+
+      #cm-container .cm-cursor {
+        border-left-color: #24292e;
+      }
+
+      #cm-container .cm-gutters {
+        background: #f6f8fa;
+        color: #8b949e;
+        border-right: 1px solid #d0d7de;
+      }
+
+      #cm-container .cm-lineNumbers .cm-gutterElement {
+        padding: 0 8px 0 4px;
+      }
+
+      #cm-container .cm-activeLine {
+        background: transparent;
+        box-shadow: inset 3px 0 0 #4a90d9;
+      }
+
+      #cm-container .cm-activeLineGutter {
+        background: #e8edf4;
+        color: #24292e;
+      }
+
+      #cm-container .cm-selectionBackground {
+        background: #b3d7ff !important;
+      }
+
+      /* Typst syntax token colours */
+      #cm-container .cm-comment {
+        color: #6a737d;
+        font-style: italic;
+      }
+      #cm-container .cm-keyword {
+        color: #6f42c1;
+      }
+      #cm-container .cm-string {
+        color: #22863a;
+      }
+      #cm-container .cm-number {
+        color: #e36209;
+      }
+      #cm-container .cm-heading {
+        color: #0550ae;
+        font-weight: bold;
+      }
+      #cm-container .cm-strong {
+        color: #b31d28;
+        font-weight: bold;
+      }
+      #cm-container .cm-em {
+        color: #735c0f;
+        font-style: italic;
+      }
+      #cm-container .cm-meta {
+        color: #d73a49;
+      }
+      #cm-container .cm-underline {
+        text-decoration: underline;
+      }
+
+      /* Highlight icon: letter on a marker-yellow background */
+      .tb-icon-highlight {
+        background: #ffe066;
+        padding: 0 3px;
+        font-weight: 600;
+      }
+
+      /* Wide buttons (insert group) — emoji labels need room */
+      .tb-btn-wide {
+        width: auto;
+        padding: 0 6px;
+        font-size: 16px;
+      }
+
+      /* ── Context menu ────────────────────────────────────────────────────── */
+      #cm-context-menu {
+        position: fixed;
+        z-index: 2000;
+        background: #fff;
+        border: 1px solid #d0d5de;
+        border-radius: 4px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+        padding: 3px 0;
+        min-width: 170px;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 13px;
+      }
+
+      .cm-ctx-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        text-align: left;
+        padding: 6px 14px 6px 10px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        color: #2c3e50;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 13px;
+      }
+
+      .cm-ctx-item:hover:not(:disabled) {
+        background: #e8edf4;
+      }
+      .cm-ctx-item:disabled {
+        color: #aaa;
+        cursor: default;
+      }
+
+      .cm-ctx-icon {
+        display: inline-block;
+        width: 18px;
+        text-align: center;
+        font-size: 14px;
+        flex-shrink: 0;
+      }
+
+      .cm-ctx-divider {
+        height: 1px;
+        background: #d0d5de;
+        margin: 3px 0;
+      }
+
+      /* ── Table picker ────────────────────────────────────────────────────── */
+      .tb-table-grid {
+        display: grid;
+        grid-template-columns: repeat(10, 18px);
+        gap: 2px;
+        cursor: pointer;
+      }
+
+      .tb-table-cell {
+        width: 18px;
+        height: 14px;
+        background: #e8edf4;
+        border: 1px solid #c0c8d4;
+        border-radius: 1px;
+      }
+
+      .tb-table-cell.active {
+        background: #4a90d9;
+        border-color: #357abd;
+      }
+
+      .tb-table-label {
+        text-align: center;
+        font-size: 12px;
+        color: #2c3e50;
+        padding: 5px 0 2px;
+        min-height: 22px;
+      }
+
+      /* ── Grid picker ─────────────────────────────────────────────────────── */
+      #popup-grid {
+        padding: 4px;
+      }
+
+      .tb-grid-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 5px 8px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        border-radius: 3px;
+      }
+
+      .tb-grid-item:hover {
+        background: #e8edf4;
+      }
+
+      .tb-grid-visual {
+        display: flex;
+        width: 100px;
+        height: 16px;
+        gap: 2px;
+        flex-shrink: 0;
+      }
+
+      .tb-grid-col {
+        background: #b8c0cc;
+        border-radius: 2px;
+        min-width: 4px;
+      }
+
+      .tb-grid-item:hover .tb-grid-col {
+        background: #4a90d9;
+      }
+
+      .tb-grid-label {
+        font-size: 12px;
+        color: #2c3e50;
+        white-space: nowrap;
+        font-family: 'Segoe UI', Arial, sans-serif;
+      }
+
+      #pdf-panel {
+        width: 50%;
+        height: 100%;
+        overflow: hidden;
+        background: #525659;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #pdf-frame {
+        width: 100%;
+        height: 100%;
+        border: none;
+        flex: 1;
+      }
+
+      #pdf-placeholder {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #aaa;
+        font-size: 14px;
+      }
+
+      #btn-render-error {
+        background: none;
+        border: none;
+        padding: 0;
+        font-size: 12px;
+        font-family: inherit;
+        color: #ff6b6b;
+        cursor: pointer;
+        text-decoration: underline dotted;
+        white-space: nowrap;
+      }
+
+      #btn-render-error:hover {
+        color: #ff4444;
+      }
+
+      #error-popover {
+        position: fixed;
+        z-index: 3000;
+        background: #fff;
+        color: #c0392b;
+        border: 1px solid #e0b0b0;
+        border-radius: 4px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        padding: 10px 12px;
+        max-width: 560px;
+        max-height: 320px;
+        overflow-y: auto;
+        font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="editor-topbar">
+      <button id="btn-app-title" title="Terug naar de opdrachtenlijst">Maatwerk</button>
+      <span id="editor-title"
+        >Opdracht bewerken: <strong><em id="editor-title-naam"></em></strong
+      ></span>
+      <span id="editor-status"></span>
+      <button id="editor-badge-btn" title="Klik om uit te loggen">?</button>
+    </div>
+    <div id="editor-toolbar">
+      <!-- Group 1: Text formatting -->
+      <div class="tb-group" id="tb-text">
+        <button class="tb-btn" data-action="bold" title="Vet"><b>B</b></button>
+        <button class="tb-btn" data-action="italic" title="Cursief"><i>I</i></button>
+        <button class="tb-btn" data-action="underline" title="Onderstrepen"><u>U</u></button>
+        <button
+          class="tb-btn"
+          data-action="more-text"
+          title="Meer opties"
+          data-popup="popup-more-text"
+        >
+          ···
+        </button>
+      </div>
+      <div id="popup-more-text" class="tb-popup" style="display: none">
+        <div class="tb-popup-grid">
+          <button class="tb-btn" data-action="overline" title="Bovenlijn">Ā</button>
+          <button class="tb-btn" data-action="strike" title="Doorhalen"><s>S</s></button>
+          <button class="tb-btn" data-action="highlight" title="Markeren">
+            <span class="tb-icon-highlight">A</span>
+          </button>
+          <button class="tb-btn" data-action="lower" title="Kleine letters">↓a</button>
+          <button class="tb-btn" data-action="upper" title="Hoofdletters">↑A</button>
+          <button class="tb-btn" data-action="smallcaps" title="Kleine kapitalen">Aᴀ</button>
+          <button class="tb-btn" data-action="sub" title="Subscript">x₂</button>
+          <button class="tb-btn" data-action="super" title="Superscript">x²</button>
+          <button class="tb-btn" data-action="quote" title="Citaat">“ ”</button>
+        </div>
+      </div>
+
+      <div class="tb-divider"></div>
+
+      <!-- Group 2: Block & structure -->
+      <div class="tb-group" id="tb-block">
+        <button class="tb-btn" data-action="list" title="Opsomming">•≡</button>
+        <button class="tb-btn" data-action="enumerate" title="Genummerde lijst">1≡</button>
+        <button class="tb-btn" data-action="math" title="Wiskundige formule">$x$</button>
+        <button class="tb-btn" data-action="codeblock" title="Codeblok">&lt;/&gt;</button>
+        <button
+          class="tb-btn"
+          data-action="reference"
+          title="Verwijzing"
+          data-popup="popup-reference"
+        >
+          @
+        </button>
+      </div>
+      <div id="popup-reference" class="tb-popup" style="display: none">
+        <div class="tb-ref-panel">
+          <div class="tb-ref-list" id="ref-list"></div>
+        </div>
+      </div>
+
+      <div class="tb-divider"></div>
+
+      <!-- Group 2a: Content blocks -->
+      <div class="tb-group" id="tb-blocks">
+        <button class="tb-btn tb-btn-wide" data-action="blok-formule" title="Formule-blok">
+          🧮
+        </button>
+        <button class="tb-btn tb-btn-wide" data-action="blok-voorbeeld" title="Voorbeeld-blok">
+          💡
+        </button>
+        <button class="tb-btn tb-btn-wide" data-action="blok-context" title="Context-blok">
+          📖
+        </button>
+        <button class="tb-btn tb-btn-wide" data-action="blok-belangrijk" title="Belangrijk-blok">
+          ❗
+        </button>
+      </div>
+
+      <div class="tb-divider"></div>
+
+      <!-- Group 2b: Insert -->
+      <div class="tb-group" id="tb-insert">
+        <button class="tb-btn tb-btn-wide" data-action="figure" title="Nieuw figuur…">🖼️</button>
+        <button
+          class="tb-btn tb-btn-wide"
+          data-action="tabel-open"
+          data-popup="popup-tabel"
+          title="Nieuwe tabel…"
+        >
+          ▦
+        </button>
+        <button
+          class="tb-btn tb-btn-wide"
+          data-action="grid-open"
+          data-popup="popup-grid"
+          title="Nieuw grid…"
+        >
+          ◫
+        </button>
+      </div>
+      <div id="popup-tabel" class="tb-popup" style="display: none"></div>
+      <div id="popup-grid" class="tb-popup" style="display: none"></div>
+
+      <div class="tb-divider"></div>
+
+      <!-- Group 3: Math elements -->
+      <div class="tb-group" id="tb-math">
+        <button class="tb-btn" data-action="math-accent" title="Accent">â</button>
+        <button class="tb-btn" data-action="math-binom" title="Binomiaalcoëfficiënt">(ⁿₖ)</button>
+        <button class="tb-btn" data-action="math-cancel" title="Doorstrepen">x̸</button>
+        <button class="tb-btn" data-action="math-cases" title="Gevallen">{⋯</button>
+        <button
+          class="tb-btn tb-math-extra"
+          data-action="math-numeq"
+          title="Genummerde vergelijking"
+        >
+          (1)
+        </button>
+        <button class="tb-btn tb-math-extra" data-action="math-frac" title="Breuk">½</button>
+        <button class="tb-btn tb-math-extra" data-action="math-lr" title="Haakjes aanpassen">
+          ⟨⟩
+        </button>
+        <button class="tb-btn tb-math-extra" data-action="math-mat" title="Matrix">(⋱)</button>
+        <button class="tb-btn tb-math-extra" data-action="math-primes" title="Priemnotatie">
+          f′
+        </button>
+        <button class="tb-btn tb-math-extra" data-action="math-root" title="Wortel">ⁿ√</button>
+        <button class="tb-btn tb-math-extra" data-action="math-sizes" title="Formaat">↕</button>
+        <button class="tb-btn tb-math-extra" data-action="math-op" title="Tekstoperator">
+          sin
+        </button>
+        <button
+          class="tb-btn tb-math-extra"
+          data-action="math-variants"
+          title="Lettertypevarianten"
+        >
+          𝔸
+        </button>
+        <button class="tb-btn tb-math-extra" data-action="math-vec" title="Vector">(⋮)</button>
+        <button
+          class="tb-btn tb-math-more"
+          data-action="math-more"
+          data-popup="popup-math-extra"
+          title="Meer wiskundige elementen"
+        >
+          ···
+        </button>
+      </div>
+      <div id="popup-math-extra" class="tb-popup" style="display: none">
+        <div class="tb-popup-grid" style="grid-template-columns: repeat(4, 28px)">
+          <button class="tb-btn" data-action="math-numeq" title="Genummerde vergelijking">
+            (1)
+          </button>
+          <button class="tb-btn" data-action="math-frac" title="Breuk">½</button>
+          <button class="tb-btn" data-action="math-lr" title="Haakjes aanpassen">⟨⟩</button>
+          <button class="tb-btn" data-action="math-mat" title="Matrix">(⋱)</button>
+          <button class="tb-btn" data-action="math-primes" title="Priemnotatie">f′</button>
+          <button class="tb-btn" data-action="math-root" title="Wortel">ⁿ√</button>
+          <button class="tb-btn" data-action="math-sizes" title="Formaat">↕</button>
+          <button class="tb-btn" data-action="math-op" title="Tekstoperator">sin</button>
+          <button class="tb-btn" data-action="math-variants" title="Lettertypevarianten">𝔸</button>
+          <button class="tb-btn" data-action="math-vec" title="Vector">(⋮)</button>
+        </div>
+      </div>
+
+      <div class="tb-divider"></div>
+
+      <!-- Group 4: Symbol pickers -->
+      <div class="tb-group" id="tb-symbols">
+        <button
+          class="tb-btn"
+          data-action="sym-letterlike"
+          title="Letterachtige symbolen"
+          data-popup="popup-sym-letterlike"
+        >
+          ℝ
+        </button>
+        <button
+          class="tb-btn"
+          data-action="sym-math"
+          title="Wiskundige symbolen"
+          data-popup="popup-sym-math"
+        >
+          ∈
+        </button>
+        <button
+          class="tb-btn"
+          data-action="sym-misc"
+          title="Overige symbolen"
+          data-popup="popup-sym-misc"
+        >
+          ☆
+        </button>
+        <button class="tb-btn" data-action="sym-emoji" title="Emoji" data-popup="popup-sym-emoji">
+          🙂
+        </button>
+      </div>
+      <div id="popup-sym-letterlike" class="tb-popup" style="display: none"></div>
+      <div id="popup-sym-math" class="tb-popup" style="display: none"></div>
+      <div id="popup-sym-misc" class="tb-popup" style="display: none"></div>
+      <div id="popup-sym-emoji" class="tb-popup" style="display: none"></div>
+    </div>
+
+    <div id="editor-body">
+      <div id="cm-container"></div>
+      <div id="pdf-panel">
+        <div id="pdf-placeholder">Sla op om de PDF te renderen…</div>
+        <iframe id="pdf-frame" src="" style="display: none"></iframe>
+      </div>
+    </div>
+    <!-- Context menu -->
+    <div id="cm-context-menu" style="display: none">
+      <button class="cm-ctx-item" data-cm-action="cut">
+        <span class="cm-ctx-icon">✂️</span>Knippen
+      </button>
+      <button class="cm-ctx-item" data-cm-action="copy">
+        <span class="cm-ctx-icon">📋</span>Kopiëren
+      </button>
+      <button class="cm-ctx-item" data-cm-action="paste">
+        <span class="cm-ctx-icon">📌</span>Plakken
+      </button>
+      <div class="cm-ctx-divider"></div>
+      <button class="cm-ctx-item" data-cm-action="comment">
+        <span class="cm-ctx-icon">💬</span>Opmerking aan/uit
+      </button>
+    </div>
+
+    <div id="error-popover" style="display: none"></div>
+    <script type="module" src="editor-init.js"></script>
+  </body>
+</html>

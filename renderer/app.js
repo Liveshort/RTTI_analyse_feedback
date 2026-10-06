@@ -10,7 +10,8 @@ import { renderLeerlingen, renderStudentList, leerlingenState } from './screens/
 import { renderGroepen, renderGroepenForYear } from './screens/groepen.js';
 import { renderToetsen, renderToetsenList } from './screens/toetsen.js';
 import { renderObservaties } from './screens/observaties.js';
-import { renderRapport, updateRapportExamsByJaarlaag, generateRapport } from './screens/rapport.js';
+import { renderOpdrachten } from './screens/opdrachten.js';
+import { openEditor } from './modals/editor.js';
 import { renderGebruikers } from './screens/gebruikers.js';
 import { renderSchool } from './screens/school.js';
 
@@ -43,6 +44,14 @@ export function navigateTo(name) {
   // Sync eigen button label for the new screen
   updateEigenLabel(name);
 
+  // Opdrachten: replace the eigen toggle with the observatie filter
+  document
+    .getElementById('obs-filter-wrap')
+    .classList.toggle('filter-screen-hidden', name !== 'opdrachten');
+  document
+    .getElementById('btn-filter-eigen')
+    .classList.toggle('filter-screen-hidden', name === 'opdrachten');
+
   if (screens[name]) {
     renderScreen(name); // render content (may be async; screen shows immediately)
     screens[name].classList.add('active');
@@ -64,8 +73,8 @@ function renderScreen(name) {
       return renderToetsen();
     case 'observaties':
       return renderObservaties();
-    case 'rapport':
-      return renderRapport();
+    case 'opdrachten':
+      return renderOpdrachten();
     case 'gebruikers':
       return renderGebruikers();
     case 'school':
@@ -81,6 +90,9 @@ const modalContent = document.getElementById('modal-content');
 /** The overlay DOM node, exported for use in csv.js askSchoolYear calls. */
 export { overlay as overlayElement };
 
+/** Open the full-screen Typst editor for an assignment. Imported from modals/editor.js. */
+export { openEditor };
+
 let _modalCharts = [];
 
 /** Register a Chart.js instance to be destroyed when the modal closes. */
@@ -92,7 +104,7 @@ let _onCloseModal = null;
 
 export function showModal(html, onShow, wide = false, onClose) {
   modalContent.innerHTML = html;
-  modalBox.classList.remove('modal-xl', 'modal-scores', 'modal-profile');
+  modalBox.classList.remove('modal-xl', 'modal-scores', 'modal-profile', 'modal-pdf');
   if (wide === true) modalBox.classList.add('modal-xl');
   else if (typeof wide === 'string') modalBox.classList.add(wide);
   overlay.classList.remove('hidden');
@@ -102,7 +114,7 @@ export function showModal(html, onShow, wide = false, onClose) {
 
 export function closeModal() {
   overlay.classList.add('hidden');
-  modalBox.classList.remove('modal-xl', 'modal-scores', 'modal-profile');
+  modalBox.classList.remove('modal-xl', 'modal-scores', 'modal-profile', 'modal-pdf');
   modalContent.innerHTML = '';
   if (_modalCharts) {
     _modalCharts.forEach((c) => {
@@ -192,17 +204,6 @@ function initSelects() {
       Store.preloadScores(v);
     },
   });
-  SEL.rapportJaarlaag = new CustomSelect(document.getElementById('rapport-jaarlaag-select'), {
-    placeholder: '— kies jaarlaag —',
-    onChange: (v) => updateRapportExamsByJaarlaag(v),
-  });
-  SEL.rapportExam = new CustomSelect(document.getElementById('rapport-exam-select'), {
-    placeholder: '— kies toets —',
-    disabled: true,
-    onChange: (v) => {
-      if (v) generateRapport(v);
-    },
-  });
 }
 
 // ── Admin vakken filter (popover, single-select) ──────────────────────────────
@@ -255,8 +256,7 @@ function buildVakkenPopover() {
 
 document.getElementById('btn-filter-vak').addEventListener('click', (e) => {
   e.stopPropagation();
-  document.getElementById('pop-ss').classList.add('hidden');
-  document.getElementById('pop-jl').classList.add('hidden');
+  closeAllPopovers('pop-vak');
   document.getElementById('pop-vak').classList.toggle('hidden');
 });
 
@@ -300,6 +300,25 @@ export function getJaarlagKlasFilter() {
 }
 export function getEigenOnly() {
   return _filterState.eigenOnly;
+}
+
+/**
+ * True when an item with these jaarlagen passes the jaarlaag filter(s).
+ * Items without jaarlagen always pass. For wiskunde the OB/WisX filter maps
+ * to klas 1-3 / 4-6 and is combined with the Klas 1-6 filter.
+ */
+export function matchesJaarlaagFilter(jaarlagen) {
+  const jls = (jaarlagen ?? []).map(String);
+  if (jls.length === 0) return true;
+  if (_jaarlagOptions !== WI_JAARLAG_OPTIONS) {
+    return jls.some((jl) => _filterState.jaarlagen.has(jl));
+  }
+  const allowed = new Set();
+  if (_filterState.jaarlagen.has('OB')) ['1', '2', '3'].forEach((k) => allowed.add(k));
+  if (['WisA', 'WisB', 'WisC', 'WisD'].some((k) => _filterState.jaarlagen.has(k))) {
+    ['4', '5', '6'].forEach((k) => allowed.add(k));
+  }
+  return jls.some((jl) => allowed.has(jl) && _filterState.jaarlagenKlas.has(jl));
 }
 
 // ── Label helpers ─────────────────────────────────────────────────────────────
@@ -360,37 +379,30 @@ function updateEigenLabel(screenName) {
 }
 
 // ── Popover open/close ────────────────────────────────────────────────────────
-function closeAllPopovers() {
-  document.getElementById('pop-vak').classList.add('hidden');
-  document.getElementById('pop-ss').classList.add('hidden');
-  document.getElementById('pop-jl-klas').classList.add('hidden');
-  document.getElementById('pop-jl').classList.add('hidden');
+const FILTER_POPOVER_IDS = ['pop-vak', 'pop-ss', 'pop-jl-klas', 'pop-jl', 'pop-obs'];
+
+function closeAllPopovers(except) {
+  FILTER_POPOVER_IDS.filter((id) => id !== except).forEach((id) =>
+    document.getElementById(id).classList.add('hidden')
+  );
 }
 
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.filter-popover-wrap')) closeAllPopovers();
 });
 
-document.getElementById('btn-filter-ss').addEventListener('click', (e) => {
-  e.stopPropagation();
-  document.getElementById('pop-jl-klas').classList.add('hidden');
-  document.getElementById('pop-jl').classList.add('hidden');
-  document.getElementById('pop-ss').classList.toggle('hidden');
-});
-
-document.getElementById('btn-filter-jl-klas').addEventListener('click', (e) => {
-  e.stopPropagation();
-  document.getElementById('pop-ss').classList.add('hidden');
-  document.getElementById('pop-jl').classList.add('hidden');
-  document.getElementById('pop-jl-klas').classList.toggle('hidden');
-});
-
-document.getElementById('btn-filter-jl').addEventListener('click', (e) => {
-  e.stopPropagation();
-  document.getElementById('pop-ss').classList.add('hidden');
-  document.getElementById('pop-jl-klas').classList.add('hidden');
-  document.getElementById('pop-jl').classList.toggle('hidden');
-});
+for (const [btnId, popId] of [
+  ['btn-filter-ss', 'pop-ss'],
+  ['btn-filter-jl-klas', 'pop-jl-klas'],
+  ['btn-filter-jl', 'pop-jl'],
+  ['btn-filter-obs', 'pop-obs'],
+]) {
+  document.getElementById(btnId).addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeAllPopovers(popId);
+    document.getElementById(popId).classList.toggle('hidden');
+  });
+}
 
 // ── Schoolsoort popover builder ───────────────────────────────────────────────
 let _schoolsoortOptions = []; // list of strings from school.json
@@ -577,6 +589,85 @@ function updateJaarlagKlasLabel() {
   );
 }
 
+// ── Observatie popover (opdrachten only) ──────────────────────────────────────
+// Options are supplied by the opdrachten screen (observaties matching the current
+// schoolsoort/jaarlaag filters). The selection is kept across option changes so
+// that narrowing and widening the other filters does not lose it.
+let _obsFilter = null; // null = alle observaties (no filtering), else Set of obs ids
+let _obsFilterOptions = []; // [{ id, naam, icon }]
+
+/** Effective observatie filter: null (no filtering) or the selected ids among the current options. */
+export function getObservatieFilter() {
+  if (!_obsFilter) return null;
+  return new Set(_obsFilterOptions.map((o) => o.id).filter((id) => _obsFilter.has(id)));
+}
+
+export function setObservatieFilterOptions(options) {
+  const sameOptions =
+    options.length === _obsFilterOptions.length &&
+    options.every((o, i) => o.id === _obsFilterOptions[i].id);
+  _obsFilterOptions = options;
+  if (!sameOptions) buildObservatiePopover();
+  updateObservatieLabel();
+}
+
+function obsIsSelected(id) {
+  return !_obsFilter || _obsFilter.has(id);
+}
+
+function buildObservatiePopover() {
+  const container = document.getElementById('pop-obs-toggles');
+  container.innerHTML = '';
+  if (_obsFilterOptions.length === 0) {
+    container.innerHTML =
+      '<div class="filter-pop-empty">Geen observaties voor deze schoolsoort en jaarlagen.</div>';
+    return;
+  }
+  for (const obs of _obsFilterOptions) {
+    const btn = document.createElement('button');
+    btn.className = 'filter-pop-toggle' + (obsIsSelected(obs.id) ? ' selected' : '');
+    btn.textContent = `${obs.icon ?? ''} ${obs.naam ?? ''}`.trim();
+    btn.title = obs.naam ?? '';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!_obsFilter) _obsFilter = new Set(_obsFilterOptions.map((o) => o.id));
+      if (_obsFilter.has(obs.id)) _obsFilter.delete(obs.id);
+      else _obsFilter.add(obs.id);
+      // Everything selected again → back to "no filtering"
+      if (_obsFilterOptions.every((o) => _obsFilter.has(o.id))) _obsFilter = null;
+      btn.classList.toggle('selected', obsIsSelected(obs.id));
+      updateObservatieLabel();
+      rerenderActive();
+    });
+    container.appendChild(btn);
+  }
+}
+
+function updateObservatieLabel() {
+  const sel = getObservatieFilter();
+  let label = 'Alle observaties';
+  if (sel && sel.size === 0) label = 'Geen observaties';
+  else if (sel && sel.size === 1) {
+    const obs = _obsFilterOptions.find((o) => sel.has(o.id));
+    label = `${obs.icon ?? ''} ${obs.naam ?? ''}`.trim();
+  } else if (sel) label = `${sel.size} observaties`;
+  document.getElementById('lbl-filter-obs').textContent = label;
+  document.getElementById('btn-filter-obs').classList.toggle('filter-btn-active', !!sel);
+}
+
+document.getElementById('pop-obs-alles').addEventListener('click', () => {
+  _obsFilter = null;
+  buildObservatiePopover();
+  updateObservatieLabel();
+  rerenderActive();
+});
+document.getElementById('pop-obs-niets').addEventListener('click', () => {
+  _obsFilter = new Set();
+  buildObservatiePopover();
+  updateObservatieLabel();
+  rerenderActive();
+});
+
 // ── Eigen toggle ──────────────────────────────────────────────────────────────
 document.getElementById('btn-filter-eigen').addEventListener('click', () => {
   _filterState.eigenOnly = !_filterState.eigenOnly;
@@ -638,6 +729,7 @@ export async function showUserBadge(user, subject) {
   userBadgeBtn.className = `user-badge-mini ${shape}`;
   userBadgeBtn.style.setProperty('--badge-color', user.kleur ?? '#888');
   userBadgeBtn.textContent = user.afkorting || user.voornaam[0] || '?';
+  userBadgeBtn.dataset.len = userBadgeBtn.textContent.length;
   userBadgeBtn.title = `${user.voornaam} — klik om uit te loggen`;
   userBadgeBtn.classList.remove('hidden');
 
@@ -651,7 +743,7 @@ export async function showUserBadge(user, subject) {
 
 function applyRoleVisibility(user) {
   const adminOnly = ['gebruikers', 'school'];
-  const teacherOnly = ['toetsen', 'observaties', 'rapport'];
+  const teacherOnly = ['toetsen', 'observaties'];
   document.querySelectorAll('.nav-btn').forEach((btn) => {
     const screen = btn.dataset.screen;
     if (user.isAdmin) {
@@ -666,6 +758,7 @@ userBadgeBtn.addEventListener('click', () => {
   userBadgeBtn.classList.add('hidden');
   _adminSubjectFilter = null;
   _activeUserId = null;
+  _obsFilter = null;
   navigateTo('startup');
 });
 

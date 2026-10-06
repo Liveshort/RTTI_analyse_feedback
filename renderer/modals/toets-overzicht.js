@@ -409,7 +409,8 @@ export async function openExamOverviewModal(examId, year, scoreOverride = null, 
         }
         const binLabels = bins.map((_, i) => {
           const upper = Math.min(start + (i + 1) * step, 10.0);
-          return '<' + upper.toFixed(1).replace('.', ',');
+          const prefix = i === count - 1 ? '\u2264' : '<';
+          return prefix + upper.toFixed(1).replace('.', ',');
         });
         const passBinIndex = Math.round((5.5 - start) / step);
         const barColors = bins.map((_, i) => gradeChartColor(start + (i + 0.5) * step));

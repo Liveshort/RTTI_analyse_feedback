@@ -1,6 +1,6 @@
 {
   "name": "rtti-app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Maatwerk score analysis tool",
   "main": "main.js",
   "scripts": {
@@ -15,8 +15,8 @@
     "appId": "nl.school.rtti-app",
     "productName": "Maatwerk",
     "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico"
+      "target": "portable",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
@@ -29,11 +29,18 @@
         "filter": [
           "typst.exe"
         ]
+      },
+      {
+        "from": "include/templates",
+        "to": "../include/templates"
       }
     ],
     "files": [
       "**/*",
       "!data/**",
+      "!bin/**",
+      "!temp/**",
+      "!include/**",
       "!node_modules/.cache/**"
     ],
     "asar": true

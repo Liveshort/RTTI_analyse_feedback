@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; worker-src https://cdn.jsdelivr.net blob:; connect-src 'self' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data: blob:;"
+    />
+    <title>PDF Viewer</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+        background: #525659;
+      }
+
+      /* ── Toolbar ──────────────────────────────────────────────── */
+      #toolbar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 10px;
+        height: 36px;
+        flex-shrink: 0;
+        background: #3b3b3b;
+        border-bottom: 1px solid #1a1a1a;
+        color: #d0d0d0;
+        font-size: 13px;
+        user-select: none;
+      }
+
+      .tb-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 26px;
+        height: 26px;
+        padding: 0 6px;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        color: #d0d0d0;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .tb-btn:hover:not(:disabled) {
+        background: #555;
+        border-color: #666;
+      }
+      .tb-btn:active:not(:disabled) {
+        background: #666;
+      }
+      .tb-btn:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+
+      .tb-sep {
+        width: 1px;
+        height: 20px;
+        background: #555;
+        margin: 0 4px;
+        flex-shrink: 0;
+      }
+
+      #page-num {
+        width: 38px;
+        height: 24px;
+        text-align: center;
+        background: #4a4a4a;
+        border: 1px solid #666;
+        border-radius: 3px;
+        color: #e0e0e0;
+        font-size: 12px;
+        padding: 2px 4px;
+        -moz-appearance: textfield;
+      }
+      #page-num::-webkit-inner-spin-button,
+      #page-num::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+
+      #page-total {
+        color: #999;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      #zoom-select {
+        height: 24px;
+        background: #4a4a4a;
+        border: 1px solid #666;
+        border-radius: 3px;
+        color: #e0e0e0;
+        font-size: 12px;
+        padding: 0 4px;
+        cursor: pointer;
+      }
+
+      /* ── Page area ────────────────────────────────────────────── */
+      #viewer {
+        flex: 1;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 16px 0;
+        gap: 12px;
+      }
+
+      .page-wrap {
+        position: relative;
+        background: #fff;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+        flex-shrink: 0;
+      }
+
+      .page-wrap canvas {
+        display: block;
+      }
+
+      /* ── Print ───────────────────────────────────────────────── */
+      @page {
+        margin: 0;
+      }
+
+      @media print {
+        html,
+        body {
+          height: auto;
+          overflow: visible;
+          background: white;
+        }
+        body {
+          display: block;
+        }
+        #toolbar,
+        #status {
+          display: none !important;
+        }
+        #viewer {
+          display: block;
+          overflow: visible;
+          height: auto;
+          padding: 0;
+          background: white;
+        }
+        .page-wrap {
+          box-shadow: none;
+          break-after: page;
+          margin: 0;
+        }
+        .page-wrap canvas {
+          width: 100%;
+          height: auto;
+          display: block;
+        }
+      }
+
+      /* ── States ───────────────────────────────────────────────── */
+      #status {
+        position: fixed;
+        inset: 36px 0 0 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #525659;
+        color: #bbb;
+        font-size: 15px;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <button class="tb-btn" id="btn-prev" disabled title="Vorige pagina">&#9664;</button>
+      <input id="page-num" type="number" min="1" value="1" />
+      <span id="page-total">/ —</span>
+      <button class="tb-btn" id="btn-next" disabled title="Volgende pagina">&#9654;</button>
+      <div class="tb-sep"></div>
+      <button class="tb-btn" id="btn-zoom-out" title="Uitzoomen">&#8722;</button>
+      <select id="zoom-select" title="Zoomniveau">
+        <option value="0.5">50%</option>
+        <option value="0.75">75%</option>
+        <option value="1">100%</option>
+        <option value="1.25" selected>125%</option>
+        <option value="1.5">150%</option>
+        <option value="1.75">175%</option>
+        <option value="2">200%</option>
+        <option value="fit-width">Paginabreedte</option>
+        <option value="fit-page">Volledige pagina</option>
+      </select>
+      <button class="tb-btn" id="btn-zoom-in" title="Inzoomen">&#43;</button>
+      <div class="tb-sep"></div>
+      <button class="tb-btn" id="btn-print" title="Afdrukken">Openen in PDF-viewer</button>
+    </div>
+
+    <div id="viewer"></div>
+    <div id="status">PDF wordt geladen&hellip;</div>
+
+    <script type="module" src="pdf-viewer.js"></script>
+  </body>
+</html>

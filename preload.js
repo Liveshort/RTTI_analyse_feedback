@@ -52,4 +52,20 @@ contextBridge.exposeInMainWorld('rtti', {
 
   // Open a file with the OS default application (e.g. to print a PDF).
   openPath: (absPath) => ipcRenderer.invoke('shell:openPath', absPath),
+
+  // Read a plain text file relative to the data directory (e.g. .typ files).
+  readTextFile: (relPath) => ipcRenderer.invoke('fs:readTextFile', relPath),
+
+  // Write a plain text file relative to the data directory.
+  writeTextFile: (relPath, content) => ipcRenderer.invoke('fs:writeTextFile', relPath, content),
+
+  // Copy base_assignment.typ template to data/opdrachten/<typFile>.
+  createAssignmentTypFile: (typFile) => ipcRenderer.invoke('app:createAssignmentTypFile', typFile),
+
+  // Compile an opdracht file to PDF using the standard wrapper.
+  // typFile: filename only (e.g. 'opdracht-1.typ'), title: plain-text string.
+  // obsIcon/obsName: observation emoji + label for the header card (placeholders in editor).
+  // Returns { success, pdfPath } or { success: false, error }.
+  renderAssignmentPdf: (typFile, title, obsIcon, obsName) =>
+    ipcRenderer.invoke('app:renderAssignmentPdf', typFile, title, obsIcon, obsName),
 });

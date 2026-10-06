@@ -4,11 +4,17 @@ const fs = require('fs');
 const { execFile } = require('child_process');
 
 // ---------------------------------------------------------------------------
-// Data directory: always next to the executable (or next to main.js in dev)
+// App directory: next to the executable (or next to main.js in dev).
+// The portable build extracts itself to a temp folder, so use the folder
+// the portable .exe was launched from instead.
 // ---------------------------------------------------------------------------
+function getAppDir() {
+  if (!app.isPackaged) return __dirname;
+  return process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
+}
+
 function getDataDir() {
-  const base = app.isPackaged ? path.dirname(process.execPath) : __dirname;
-  const dataDir = path.join(base, 'data');
+  const dataDir = path.join(getAppDir(), 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   return dataDir;
 }
@@ -171,6 +177,30 @@ ipcMain.handle('fs:ensureDir', (_event, relPath) => {
 // Absolute path of data dir (for display/debugging).
 ipcMain.handle('fs:getDataDir', () => getDataDir());
 
+// Read a plain text file relative to the data directory.
+ipcMain.handle('fs:readTextFile', (_event, relPath) => {
+  const abs = path.join(getDataDir(), relPath);
+  if (!fs.existsSync(abs)) return null;
+  return fs.readFileSync(abs, 'utf8');
+});
+
+// Write a plain text file relative to the data directory (creates dirs if needed).
+ipcMain.handle('fs:writeTextFile', (_event, relPath, content) => {
+  const abs = path.join(getDataDir(), relPath);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, content, 'utf8');
+  return { ok: true };
+});
+
+// Copy the base_assignment.typ template to data/opdrachten/<typFile>.
+ipcMain.handle('app:createAssignmentTypFile', (_event, typFile) => {
+  const src = path.join(getTemplatesDir(), 'base_assignment.typ');
+  const dest = path.join(getDataDir(), 'opdrachten', typFile);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+  return { ok: true };
+});
+
 // ---------------------------------------------------------------------------
 // Local session (machine-local, not synced via OneDrive)
 // Stored in app.getPath('userData'), outside the shared data/ folder.
@@ -264,9 +294,14 @@ ipcMain.handle('typst:compile', (_event, typFilePath, outputPdfPath) => {
 // Writes a temporary wrapper .typ, compiles it, then deletes it.
 ipcMain.handle('app:renderRapportPdf', (_event, _examId, students, examInfo) => {
   const bin = getTypstBinary();
-  const appDir = app.isPackaged ? path.dirname(process.execPath) : __dirname;
+  const appDir = getAppDir();
   const tmpDir = path.join(appDir, 'temp');
   fs.mkdirSync(tmpDir, { recursive: true });
+  // Copy the template next to the wrapper: Typst can only read files under --root (appDir).
+  fs.copyFileSync(
+    path.join(getTemplatesDir(), 'rtti_export.typ'),
+    path.join(tmpDir, 'rtti_export.typ')
+  );
 
   // Recursively serialize a JS value to a Typst literal.
   function toTypst(val) {
@@ -290,7 +325,7 @@ ipcMain.handle('app:renderRapportPdf', (_event, _examId, students, examInfo) => 
   // The wrapper imports setup + render, applies heading styles via #show: setup,
   // then calls render with the injected data.
   const wrapperContent =
-    `#import "../include/templates/rtti_export.typ": setup, render\n\n` +
+    `#import "rtti_export.typ": setup, render\n\n` +
     `#let exam_info = ${toTypst(examInfo ?? {})}\n` +
     `#let student_data = ${toTypst(students ?? [])}\n\n` +
     `#show: setup\n` +
@@ -298,6 +333,59 @@ ipcMain.handle('app:renderRapportPdf', (_event, _examId, students, examInfo) => 
 
   const wrapperPath = path.join(tmpDir, '_rapport_run.typ');
   const outputPdf = path.join(tmpDir, 'rapport_preview.pdf');
+  fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
+
+  return new Promise((resolve) => {
+    execFile(bin, ['compile', '--root', appDir, wrapperPath, outputPdf], (err, _stdout, stderr) => {
+      try {
+        fs.unlinkSync(wrapperPath);
+      } catch (_) {}
+      if (err) resolve({ success: false, error: stderr || err.message });
+      else resolve({ success: true, pdfPath: outputPdf });
+    });
+  });
+});
+
+// Compile an opdracht .typ file to PDF.
+// typFile: filename only (e.g. 'opdracht-1.typ'), relative to data/opdrachten/
+// title: plain-text title rendered as a level-1 heading in the wrapper
+// Returns { success, pdfPath } or { success: false, error }.
+ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title, obsIcon, obsName) => {
+  const bin = getTypstBinary();
+  const appDir = getAppDir();
+  const tmpDir = path.join(appDir, 'temp');
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  const esc = (s) => (s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const escTitle = esc(title);
+  const escObsIcon = esc(obsIcon ?? '❌');
+  const escObsName = esc(obsName ?? 'Geen observatie');
+
+  // Absolute Typst paths (resolved against --root appDir).
+  const wrapperContent =
+    `#import "/data/opdrachten/lib.typ": setup, opdracht_header\n` +
+    `#import "/data/opdrachten/${typFile}": setup_extra, render_uitleg, render_opgaven, render_antwoorden\n\n` +
+    `#show: setup\n` +
+    `#setup_extra()\n\n` +
+    `#opdracht_header(\n` +
+    `  title: "${escTitle}",\n` +
+    `  student: "Sandra Jansen",\n` +
+    `  group: "4A",\n` +
+    `  exam_prefix: "N.a.v.",\n` +
+    `  exam: "TW1 H1 Vaardigheden",\n` +
+    `  obs_icon: "${escObsIcon}",\n` +
+    `  obs_name: "${escObsName}",\n` +
+    `)\n\n` +
+    `== Uitleg\n` +
+    `#render_uitleg()\n\n` +
+    `#pagebreak()\n\n` +
+    `== Opgaven\n` +
+    `#render_opgaven()\n\n` +
+    `== Antwoorden\n` +
+    `#render_antwoorden()\n`;
+
+  const wrapperPath = path.join(tmpDir, '_assignment_run.typ');
+  const outputPdf = path.join(tmpDir, 'assignment_preview.pdf');
   fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
 
   return new Promise((resolve) => {
@@ -334,8 +422,20 @@ function createWindow() {
   if (!app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
 }
 
+// Templates ship with the app (inside the extracted temp folder for the portable build).
+function getTemplatesDir() {
+  const base = app.isPackaged ? path.dirname(process.execPath) : __dirname;
+  return path.join(base, 'include', 'templates');
+}
+
 function seedInitialData() {
   const dataDir = getDataDir();
+
+  // Always overwrite lib.typ — it is app-managed, not teacher-edited.
+  const opdrachtenDir = path.join(dataDir, 'opdrachten');
+  fs.mkdirSync(opdrachtenDir, { recursive: true });
+  fs.copyFileSync(path.join(getTemplatesDir(), 'lib.typ'), path.join(opdrachtenDir, 'lib.typ'));
+
   const gebruikersPath = path.join(dataDir, 'gebruikers.json');
   if (!fs.existsSync(gebruikersPath)) {
     fs.writeFileSync(

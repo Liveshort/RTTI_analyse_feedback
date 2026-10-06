@@ -1,3 +1,4 @@
+import { ICONS } from '../utils/icons.js';
 import {
   showModal,
   closeModal,
@@ -151,6 +152,8 @@ export function renderObservaties() {
     return;
   }
 
+  obs.sort((a, b) => (a.naam ?? '').localeCompare(b.naam ?? '', 'nl', { sensitivity: 'base' }));
+
   container.innerHTML = obs
     .map(
       (o) => `
@@ -164,8 +167,8 @@ export function renderObservaties() {
         <span class="small">Schoolsoort: ${(o.schoolsoort ?? []).join(', ') || '—'} &nbsp;·&nbsp; Jaarlagen: ${(o.jaarlagen ?? []).join(', ') || '—'}</span>
       </div>
       <div class="card-actions">
-        <button class="btn-sm btn-sm-icon" data-action="edit-obs" data-id="${escHtml(o.id)}" title="Observatie bewerken">✎</button>
-        <button class="btn-sm btn-danger btn-sm-icon" data-action="del-obs" data-id="${escHtml(o.id)}"${Store.obsIsUsedInAnyExam(o.id) ? ' disabled title="Deze observatie is gekoppeld aan een toets en kan dus niet worden verwijderd."' : ' title="Observatie verwijderen"'}>🗑</button>
+        <button class="btn-sm btn-sm-icon" data-action="edit-obs" data-id="${escHtml(o.id)}" title="Observatie bewerken">${ICONS.pen}</button>
+        <button class="btn-sm btn-danger btn-sm-icon" data-action="del-obs" data-id="${escHtml(o.id)}"${Store.obsIsUsedInAnyExam(o.id) ? ' disabled title="Deze observatie is gekoppeld aan een toets en kan dus niet worden verwijderd."' : ' title="Observatie verwijderen"'}>${ICONS.trash}</button>
       </div>
     </div>`
     )

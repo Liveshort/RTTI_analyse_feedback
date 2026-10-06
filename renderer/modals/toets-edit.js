@@ -360,12 +360,14 @@ export function showExamEditor(
   const boundaries = extractBoundaries(exam.questions, mode);
   cascadeStructure(exam.questions, boundaries, mode);
 
-  const availableObs = Store.getObservatiesSync().filter((o) => {
-    if (!(o.jaarlagen ?? []).map(String).includes(String(exam.jaarlaag))) return false;
-    const obsSS = o.schoolsoort ?? [];
-    if (obsSS.length === 0) return true;
-    return (exam.schoolsoort ?? []).some((ss) => obsSS.includes(ss));
-  });
+  const availableObs = Store.getObservatiesSync()
+    .filter((o) => {
+      if (!(o.jaarlagen ?? []).map(String).includes(String(exam.jaarlaag))) return false;
+      const obsSS = o.schoolsoort ?? [];
+      if (obsSS.length === 0) return true;
+      return (exam.schoolsoort ?? []).some((ss) => obsSS.includes(ss));
+    })
+    .sort((a, b) => (a.naam ?? '').localeCompare(b.naam ?? '', 'nl', { sensitivity: 'base' }));
 
   showModal(
     `

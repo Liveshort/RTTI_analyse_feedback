@@ -1,4 +1,5 @@
 import { lerpColor } from '../utils/colors.js';
+import { ICONS } from '../utils/icons.js';
 import {
   escHtml,
   SEL,
@@ -9,6 +10,7 @@ import {
   getAdminSubjectFilter,
 } from '../app.js';
 import { openScoreModal } from './scores.js';
+import { openRapportModal, openRttiUitlegModal } from '../modals/rapport.js';
 
 // ── Modal imports (used directly in this screen file) ───────────────────────
 import { openExamOverviewModal } from '../modals/toets-overzicht.js';
@@ -53,6 +55,7 @@ export function renderToetsen() {
   SEL.toetsenYear.setValue(years.includes(currentYear) ? currentYear : years[0]);
 
   document.getElementById('btn-add-exam').onclick = () => openExamModal(null);
+  document.getElementById('btn-toetsen-rtti-uitleg').onclick = () => openRttiUitlegModal();
   renderToetsenList();
   Store.preloadScores(SEL.toetsenYear.getValue() || cfg.activeYear);
 }
@@ -277,6 +280,10 @@ export async function renderToetsenList() {
     return `${e.volgnummer ?? ''}-${letter}`;
   }
 
+  function menuBtnHtml(examId, kind) {
+    return `<button class="btn-sm btn-sm-icon exam-menu-btn" data-action="exam-menu" data-id="${escHtml(examId)}" data-kind="${kind}" title="Meer acties" aria-haspopup="menu" aria-expanded="false">${ICONS.dots}</button>`;
+  }
+
   function attemptCardHtml(e) {
     return `
       <div class="card exam-attempt-card">
@@ -286,11 +293,9 @@ export async function renderToetsenList() {
           ${statsSpanHtml(e.id)}
         </div>
         <div class="card-actions">
-          <button class="btn-sm exam-card-btn" data-action="goto-scores" data-examid="${escHtml(e.id)}">Scores invoeren</button>
           <button class="btn-sm exam-card-btn" data-action="exam-overview" data-examid="${escHtml(e.id)}">Overzicht openen</button>
           <div class="card-vsep"></div>
-          <button class="btn-sm btn-sm-icon" data-action="edit-exam" data-id="${escHtml(e.id)}" title="Toets bewerken">✎</button>
-          <button class="btn-sm btn-danger btn-sm-icon" data-action="del-exam" data-id="${escHtml(e.id)}" title="Toets verwijderen">🗑</button>
+          ${menuBtnHtml(e.id, 'attempt')}
         </div>
       </div>`;
   }
@@ -317,13 +322,9 @@ export async function renderToetsenList() {
             ${statsSpanHtml(e.id)}
           </div>
           <div class="card-actions">
-            <button class="btn-sm btn-sm-icon" data-action="add-resit" data-id="${escHtml(e.id)}" title="+ Inhaal / herkansing">+</button>
-            <div class="card-vsep"></div>
-            <button class="btn-sm exam-card-btn" data-action="goto-scores" data-examid="${escHtml(e.id)}">Scores invoeren</button>
             <button class="btn-sm exam-card-btn" data-action="exam-overview" data-examid="${escHtml(e.id)}">Overzicht openen</button>
             <div class="card-vsep"></div>
-            <button class="btn-sm btn-sm-icon" data-action="edit-exam" data-id="${escHtml(e.id)}" title="Toets bewerken">✎</button>
-            <button class="btn-sm btn-danger btn-sm-icon" data-action="del-exam" data-id="${escHtml(e.id)}" title="Toets verwijderen">🗑</button>
+            ${menuBtnHtml(e.id, 'solo')}
           </div>
         </div>`;
     } else {
@@ -336,12 +337,9 @@ export async function renderToetsenList() {
             ${statsSpanHtml(e.id, true)}
           </div>
           <div class="card-actions">
-            <button class="btn-sm btn-sm-icon" data-action="add-resit" data-id="${escHtml(e.id)}" title="+ Inhaal / herkansing">+</button>
-            <div class="card-vsep"></div>
             <button class="btn-sm exam-card-btn" data-action="exam-overview-best" data-parentid="${escHtml(e.id)}">Overzicht openen</button>
             <div class="card-vsep"></div>
-            <button class="btn-sm btn-sm-icon" data-action="edit-summary" data-id="${escHtml(e.id)}" title="Verzamelkaart bewerken">✎</button>
-            <span style="cursor:not-allowed;display:inline-flex" title="Deze toets bestaat uit meerdere pogingen. De individuele pogingen moeten eerst worden verwijderd."><button class="btn-sm btn-danger btn-sm-icon" disabled style="pointer-events:none">🗑</button></span>
+            ${menuBtnHtml(e.id, 'summary')}
           </div>
         </div>
         <div class="attempt-cards-wrapper">
@@ -354,17 +352,8 @@ export async function renderToetsenList() {
 
   // ── Event listeners ────────────────────────────────────────────────────────
   container
-    .querySelectorAll('[data-action="edit-exam"]')
-    .forEach((b) => b.addEventListener('click', () => openExamModal(b.dataset.id)));
-  container
-    .querySelectorAll('[data-action="del-exam"]')
-    .forEach((b) => b.addEventListener('click', () => deleteExam(b.dataset.id)));
-  container.querySelectorAll('[data-action="goto-scores"]').forEach((b) =>
-    b.addEventListener('click', () => {
-      const yr = SEL.toetsenYear.getValue() || Store.getConfigSync().activeYear;
-      openScoreModal(b.dataset.examid, yr, { openExamModal, renderToetsenList });
-    })
-  );
+    .querySelectorAll('[data-action="exam-menu"]')
+    .forEach((b) => b.addEventListener('click', () => toggleExamMenu(b, year)));
   container.querySelectorAll('[data-action="exam-overview"]').forEach((b) =>
     b.addEventListener('click', () => {
       const yr = SEL.toetsenYear.getValue() || Store.getConfigSync().activeYear;
@@ -375,18 +364,6 @@ export async function renderToetsenList() {
     b.addEventListener('click', () => {
       const yr = SEL.toetsenYear.getValue() || Store.getConfigSync().activeYear;
       openBestGradesOverviewModal(b.dataset.parentid, yr);
-    })
-  );
-  container.querySelectorAll('[data-action="add-resit"]').forEach((b) =>
-    b.addEventListener('click', () => {
-      const yr = SEL.toetsenYear.getValue() || Store.getConfigSync().activeYear;
-      openResitModal(b.dataset.id, yr);
-    })
-  );
-  container.querySelectorAll('[data-action="edit-summary"]').forEach((b) =>
-    b.addEventListener('click', () => {
-      const yr = SEL.toetsenYear.getValue() || Store.getConfigSync().activeYear;
-      openSummaryEditModal(b.dataset.id, yr);
     })
   );
 
@@ -460,32 +437,167 @@ export async function renderToetsenList() {
       }
     }
   }
+}
 
-  // ── Disable Verwijderen for exams with scores or resits ────────────────────
-  for (const e of originals) {
-    // Sync resit check: disable original's delete button if it has resits
-    if (Store.examHasResits(e.id, year)) {
-      const btn = container.querySelector(
-        `[data-action="del-exam"][data-id="${CSS.escape(e.id)}"]`
-      );
-      if (btn) {
-        btn.disabled = true;
-        btn.title = 'Er zijn herkansingen gekoppeld aan deze toets, verwijder die eerst.';
-      }
-    }
-    const allAttempts = [e, ...(resitsByParent[e.id] ?? [])];
-    for (const attempt of allAttempts) {
-      Store.examHasScores(attempt.id, year).then((has) => {
-        if (!has) return;
-        const btn = container.querySelector(
-          `[data-action="del-exam"][data-id="${CSS.escape(attempt.id)}"]`
-        );
-        if (btn) {
-          btn.disabled = true;
-          btn.title =
-            'Er zijn scores ingevoerd voor deze toets, de toets kan dus niet worden verwijderd.';
+// ═══════════════════════════════════════════════════════════════════════════════
+// Exam card action menu (⋮)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _openMenu = null; // { el, btn, cleanup }
+
+function closeExamMenu() {
+  if (!_openMenu) return;
+  _openMenu.cleanup();
+  _openMenu.el.remove();
+  _openMenu.btn.setAttribute('aria-expanded', 'false');
+  _openMenu.btn.classList.remove('active');
+  _openMenu = null;
+}
+
+/** Returns the reason the exam cannot be deleted, or null if it can. */
+async function deleteBlockReason(examId, year) {
+  if (Store.examHasResits(examId, year))
+    return 'Er zijn herkansingen gekoppeld aan deze toets, verwijder die eerst.';
+  if (await Store.examHasScores(examId, year))
+    return 'Er zijn scores ingevoerd voor deze toets, de toets kan dus niet worden verwijderd.';
+  return null;
+}
+
+/**
+ * Menu items per card kind:
+ *  - 'solo'    — exam without resits
+ *  - 'summary' — summary card of an exam with resits
+ *  - 'attempt' — one attempt (original or resit) under a summary card
+ */
+async function buildMenuItems(examId, kind, year) {
+  const items = [
+    kind === 'summary'
+      ? {
+          icon: ICONS.scores,
+          label: 'Scores invoeren',
+          disabled: 'Voer de scores in per poging (origineel, inhaal of herkansing).',
         }
-      });
-    }
+      : {
+          icon: ICONS.scores,
+          label: 'Scores invoeren',
+          run: () => openScoreModal(examId, year, { openExamModal, renderToetsenList }),
+        },
+    kind === 'summary'
+      ? {
+          icon: ICONS.rapport,
+          label: 'Rapport genereren',
+          disabled: 'Genereer het rapport per poging (origineel, inhaal of herkansing).',
+        }
+      : {
+          icon: ICONS.rapport,
+          label: 'Rapport genereren',
+          run: () => openRapportModal(examId, year),
+        },
+    { icon: ICONS.opdrachten, label: 'Opdrachten genereren', disabled: 'Nog niet beschikbaar.' },
+    'sep',
+  ];
+
+  if (kind !== 'attempt') {
+    items.push({
+      icon: ICONS.plus,
+      label: 'Inhaal / herkansing toevoegen',
+      run: () => openResitModal(examId, year),
+    });
   }
+
+  if (kind === 'summary') {
+    items.push(
+      {
+        icon: ICONS.pen,
+        label: 'Verzamelkaart bewerken',
+        run: () => openSummaryEditModal(examId, year),
+      },
+      {
+        icon: ICONS.trash,
+        label: 'Toets verwijderen',
+        danger: true,
+        disabled:
+          'Deze toets bestaat uit meerdere pogingen. De individuele pogingen moeten eerst worden verwijderd.',
+      }
+    );
+  } else {
+    items.push(
+      { icon: ICONS.pen, label: 'Toets bewerken', run: () => openExamModal(examId) },
+      {
+        icon: ICONS.trash,
+        label: 'Toets verwijderen',
+        danger: true,
+        disabled: await deleteBlockReason(examId, year),
+        run: () => deleteExam(examId),
+      }
+    );
+  }
+  return items;
+}
+
+async function toggleExamMenu(btn, year) {
+  if (_openMenu?.btn === btn) {
+    closeExamMenu();
+    return;
+  }
+  closeExamMenu();
+
+  const items = await buildMenuItems(btn.dataset.id, btn.dataset.kind, year);
+  if (!btn.isConnected) return;
+  closeExamMenu(); // another menu may have opened while awaiting
+
+  const menu = document.createElement('div');
+  menu.className = 'exam-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = items
+    .map((it, i) =>
+      it === 'sep'
+        ? '<div class="exam-menu-sep" role="separator"></div>'
+        : `<button class="exam-menu-item${it.danger ? ' exam-menu-item--danger' : ''}" role="menuitem" data-idx="${i}"${it.disabled ? ` aria-disabled="true" title="${escHtml(it.disabled)}"` : ''}><span class="exam-menu-icon">${it.icon}</span><span>${escHtml(it.label)}</span></button>`
+    )
+    .join('');
+  document.body.appendChild(menu);
+
+  // Position below the button, right-aligned; flip up if there's no room below
+  const r = btn.getBoundingClientRect();
+  const mh = menu.offsetHeight;
+  const top = r.bottom + 4 + mh > window.innerHeight - 8 ? r.top - 4 - mh : r.bottom + 4;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, r.right - menu.offsetWidth)}px`;
+
+  menu.addEventListener('click', (e) => {
+    const el = e.target.closest('.exam-menu-item');
+    if (!el || el.getAttribute('aria-disabled') === 'true') return;
+    const item = items[Number(el.dataset.idx)];
+    closeExamMenu();
+    item.run?.();
+  });
+
+  const onDocDown = (e) => {
+    if (!menu.contains(e.target) && !btn.contains(e.target)) closeExamMenu();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      closeExamMenu();
+      btn.focus();
+    }
+  };
+  const onScrollResize = () => closeExamMenu();
+  document.addEventListener('mousedown', onDocDown, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', onScrollResize);
+  window.addEventListener('scroll', onScrollResize, true);
+
+  btn.setAttribute('aria-expanded', 'true');
+  btn.classList.add('active');
+  _openMenu = {
+    el: menu,
+    btn,
+    cleanup: () => {
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', onScrollResize);
+      window.removeEventListener('scroll', onScrollResize, true);
+    },
+  };
 }

@@ -1,4 +1,5 @@
 import { showModal, closeModal, toast, escHtml, getAdminSubjectFilter } from '../app.js';
+import { ICONS } from '../utils/icons.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCREEN: Gebruikers — admin-only user management
@@ -45,7 +46,7 @@ async function renderUserList() {
       <div class="card gebruiker-card">
         <div class="gebruiker-card-left">
           <div class="user-badge ${shape}" style="--badge-color: ${user.kleur ?? '#888'}; pointer-events:none">
-            <span class="badge-initials">${escHtml(initials)}</span>
+            <span class="badge-initials" data-len="${initials.length}">${escHtml(initials)}</span>
           </div>
         </div>
         <div class="gebruiker-card-body">
@@ -56,10 +57,10 @@ async function renderUserList() {
           ${
             !user.isAdmin
               ? `
-            <button class="btn-sm btn-sm-icon" data-action="edit-user" data-id="${escHtml(user.id)}" title="Gebruiker bewerken">✎</button>
+            <button class="btn-sm btn-sm-icon" data-action="edit-user" data-id="${escHtml(user.id)}" title="Gebruiker bewerken">${ICONS.pen}</button>
             <button class="btn-sm btn-danger btn-sm-icon" data-action="toggle-user" data-id="${escHtml(user.id)}"
                     title="${user.actief ? 'Gebruiker deactiveren' : 'Gebruiker activeren'}">
-              ${user.actief ? '🚫' : '✓'}
+              ${user.actief ? ICONS.ban : ICONS.check}
             </button>
           `
               : ''

@@ -1,50 +1,10 @@
-import { SEL, toast, showModal, closeModal } from '../app.js';
+import { toast, showModal, closeModal, escHtml } from '../app.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SCREEN: Rapport genereren
+// MODAL: Rapport (opened from the Toetsen screen)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let _allExams = [];
-
-export async function renderRapport() {
-  const cfg = Store.getConfigSync();
-  const year = cfg.activeYear;
-
-  _allExams = [];
-  SEL.rapportJaarlaag.setOptions([]);
-  SEL.rapportExam.setOptions([]);
-  SEL.rapportExam.setDisabled(true);
-  document.getElementById('rapport-content').innerHTML =
-    '<p class="hint">Selecteer een jaarlaag en een toets.</p>';
-
-  document.getElementById('btn-rtti-uitleg').addEventListener('click', () => openRttiUitlegModal());
-
-  if (!year) return;
-
-  _allExams = await window.rtti.readAllJson(`${year}/exams`);
-
-  const jaarlagen = [
-    ...new Set(_allExams.map((e) => String(e.jaarlaag ?? '')).filter(Boolean)),
-  ].sort((a, b) => Number(a) - Number(b));
-
-  SEL.rapportJaarlaag.setOptions(jaarlagen.map((j) => ({ value: j, label: `Klas ${j}` })));
-}
-
-export function updateRapportExamsByJaarlaag(jaarlaag) {
-  const subject = Store.getActiveSubject();
-  const filtered = _allExams.filter(
-    (e) => String(e.jaarlaag ?? '') === String(jaarlaag) && (!subject || e.subject === subject)
-  );
-  SEL.rapportExam.setOptions([
-    { value: '', label: '— kies toets —' },
-    ...filtered.map((e) => ({
-      value: e.id,
-      label: (e.volgnummer ? e.volgnummer + ' \u2013 ' : '') + e.title,
-    })),
-  ]);
-  SEL.rapportExam.setDisabled(false);
-  document.getElementById('rapport-content').innerHTML = '<p class="hint">Selecteer een toets.</p>';
-}
+let _printListener = null; // cleaned up each time a new rapport is rendered
 
 // ── Lollipop data helpers ──────────────────────────────────────────────────────
 
@@ -210,19 +170,9 @@ function buildLeeradviesRows(vragen, adviesData, observaties) {
 
 // ── Main generate function ─────────────────────────────────────────────────────
 
-export async function generateRapport(examId) {
-  const content = document.getElementById('rapport-content');
-
-  // A — spinner
-  content.innerHTML = '<div class="rapport-spinner">Rapport wordt gegenereerd\u2026</div>';
-
-  // B — disable selectors while compiling
-  SEL.rapportJaarlaag.setDisabled(true);
-  SEL.rapportExam.setDisabled(true);
-
-  const cfg = Store.getConfigSync();
-  const year = cfg.activeYear;
-  const exam = _allExams.find((e) => e.id === examId);
+/** Collects all student data for `exam` in `year` and compiles the Typst rapport. */
+async function compileRapport(exam, year) {
+  const examId = exam.id;
   const subject = exam?.subject;
 
   // Ensure students, groups, scores, and observations are loaded for this subject
@@ -314,35 +264,62 @@ export async function generateRapport(examId) {
     },
   };
 
+  return window.rtti.renderRapportPdf(examId, studentData, examInfo);
+}
+
+/**
+ * Compiles the rapport for `exam` and shows it in the PDF viewer inside `content`.
+ * Shows a spinner while compiling and an error message on failure.
+ */
+async function showRapportPdf(content, exam, year) {
+  content.innerHTML = '<div class="rapport-spinner">Rapport wordt gegenereerd…</div>';
+
   let result;
   try {
-    result = await window.rtti.renderRapportPdf(examId, studentData, examInfo);
-  } finally {
-    SEL.rapportJaarlaag.setDisabled(false);
-    SEL.rapportExam.setDisabled(false);
+    result = await compileRapport(exam, year);
+  } catch (err) {
+    result = { success: false, error: String(err?.message ?? err) };
   }
 
   if (!result.success) {
-    content.innerHTML = `<pre class="hint rapport-error">${result.error.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
-    // D — error toast
+    content.innerHTML = `<pre class="hint rapport-error">${String(result.error).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
     toast('Compilatiefout bij het genereren van het rapport.', 'error');
     return;
   }
+  // The user may have navigated away / closed the modal while compiling
+  if (!content.isConnected) return;
 
   // Convert Windows backslashes and build a file:// URL
   const pdfUrl = 'file:///' + result.pdfPath.replace(/\\/g, '/');
   const absPath = result.pdfPath;
-  content.innerHTML = `
-    <div class="rapport-pdf-toolbar">
-      <button class="btn btn-secondary btn-sm" id="btn-rapport-open">Openen / afdrukken\u2026</button>
-    </div>
-    <iframe class="rapport-pdf-frame" src="${pdfUrl}"></iframe>`;
-  document.getElementById('btn-rapport-open').addEventListener('click', () => {
-    window.rtti.openPath(absPath);
-  });
+  const viewerSrc = `pdf-viewer.html?file=${encodeURIComponent(pdfUrl)}`;
+  content.innerHTML = `<iframe class="rapport-pdf-frame" src="${viewerSrc}"></iframe>`;
 
-  // D — success toast
+  // Let the embedded PDF viewer's "Afdrukken" button open the file in the
+  // system viewer via postMessage (window.print() doesn't work in Electron iframes).
+  if (_printListener) window.removeEventListener('message', _printListener);
+  _printListener = (e) => {
+    if (e.data?.type === 'print-pdf') window.rtti.openPath(absPath);
+  };
+  window.addEventListener('message', _printListener);
+
   toast('Rapport gegenereerd.', 'success');
+}
+
+/** Opens the rapport for one exam in a modal overlay (used from the Toetsen screen). */
+export function openRapportModal(examId, year) {
+  const exam = Store.getExamsSync(year).find((e) => e.id === examId);
+  if (!exam) return;
+  showModal(
+    `<h3 class="modal-title">Rapport — ${escHtml(exam.title)}</h3>
+     <div class="rapport-modal-content"></div>`,
+    (el) => showRapportPdf(el.querySelector('.rapport-modal-content'), exam, year),
+    'modal-pdf',
+    () => {
+      if (_printListener) window.removeEventListener('message', _printListener);
+      _printListener = null;
+    }
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -544,7 +521,7 @@ function initDualSliders(el) {
   }
 }
 
-async function openRttiUitlegModal() {
+export async function openRttiUitlegModal() {
   const subject = Store.getActiveSubject() ?? 'nat';
   const tabs = buildTabs(subject);
 

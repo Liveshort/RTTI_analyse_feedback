@@ -1,3 +1,4 @@
+import { ICONS } from '../utils/icons.js';
 import {
   escHtml,
   SEL,
@@ -151,8 +152,8 @@ export async function renderGroepenForYear(year) {
           Store.isAdminActive()
             ? `
         <div class="card-actions">
-          <button class="btn-sm btn-sm-icon" data-action="edit-group" data-id="${escHtml(g.id)}" title="Groep bewerken">✎</button>
-          <button class="btn-sm btn-danger btn-sm-icon" data-action="del-group" data-id="${escHtml(g.id)}"${g.student_ids.length > 0 ? ' disabled title="Deze groep heeft leerlingen en kan dus niet worden verwijderd."' : ' title="Groep verwijderen"'}>🗑</button>
+          <button class="btn-sm btn-sm-icon" data-action="edit-group" data-id="${escHtml(g.id)}" title="Groep bewerken">${ICONS.pen}</button>
+          <button class="btn-sm btn-danger btn-sm-icon" data-action="del-group" data-id="${escHtml(g.id)}"${g.student_ids.length > 0 ? ' disabled title="Deze groep heeft leerlingen en kan dus niet worden verwijderd."' : ' title="Groep verwijderen"'}>${ICONS.trash}</button>
         </div>`
             : ''
         }

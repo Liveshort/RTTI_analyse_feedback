@@ -29,7 +29,7 @@ export async function renderStartup() {
     return `
       <button class="user-badge ${shape}" data-user-id="${user.id}"
               style="--badge-color: ${user.kleur ?? '#888'}"${fotoAttr}>
-        <span class="badge-initials">${initials}</span>
+        <span class="badge-initials" data-len="${initials.length}">${initials}</span>
         <span class="badge-name">${user.voornaam}</span>
       </button>`;
   }

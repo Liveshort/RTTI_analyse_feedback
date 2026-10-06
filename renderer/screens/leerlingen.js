@@ -1,3 +1,4 @@
+import { ICONS } from '../utils/icons.js';
 import {
   escHtml,
   SEL,
@@ -159,8 +160,8 @@ export function renderStudentList() {
           Store.isAdminActive()
             ? `
         <div class="card-actions">
-          <button class="btn-sm btn-sm-icon" data-action="edit-student" data-id="${s.id}" title="Leerling bewerken">✎</button>
-          <button class="btn-sm btn-danger btn-sm-icon" data-action="del-student" data-id="${s.id}" title="Leerling verwijderen">🗑</button>
+          <button class="btn-sm btn-sm-icon" data-action="edit-student" data-id="${s.id}" title="Leerling bewerken">${ICONS.pen}</button>
+          <button class="btn-sm btn-danger btn-sm-icon" data-action="del-student" data-id="${s.id}" title="Leerling verwijderen">${ICONS.trash}</button>
         </div>`
             : ''
         }

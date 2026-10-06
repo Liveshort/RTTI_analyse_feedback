@@ -620,20 +620,16 @@ const Store = (() => {
     const updated = { ...obs, subjects };
     delete updated.subject;
     await window.rtti.writeJson(ypObs(updated.id), updated);
+    // Other subjects' caches may be affected too (multi-subject obs), so drop
+    // them all and reload the active one so sync getters stay populated.
     invalidateObsCache();
-    const key = `obs/${subject}`;
-    const arr = cache[key] ?? [];
-    const i = arr.findIndex((o) => o.id === updated.id);
-    if (i >= 0) arr[i] = updated;
-    else if (obsMatchesSubject(updated, subject)) arr.push(updated);
-    cache[key] = arr;
+    await loadObservaties(subject);
   }
 
   async function deleteObservation(id, subject = _activeSubject) {
     await window.rtti.deleteFile(ypObs(id));
     invalidateObsCache();
-    const key = `obs/${subject}`;
-    cache[key] = (cache[key] ?? []).filter((o) => o.id !== id);
+    await loadObservaties(subject);
   }
 
   async function setObservation(studentId, examId, obsId, checked, year) {
@@ -977,6 +973,39 @@ const Store = (() => {
     );
   }
 
+  // ── Opdrachten ────────────────────────────────────────────────────────────
+
+  async function loadOpdrachten() {
+    if (cache['opdrachten'] !== undefined) return cache['opdrachten'];
+    const all = await window.rtti.readAllJson('opdrachten');
+    cache['opdrachten'] = all.filter((o) => o && o.id);
+    return cache['opdrachten'];
+  }
+
+  function getOpdrachtenSync() {
+    return cache['opdrachten'] ?? [];
+  }
+
+  async function getOpdrachten() {
+    return loadOpdrachten();
+  }
+
+  async function upsertOpdracht(opdracht) {
+    cache['opdrachten'] = undefined;
+    await window.rtti.writeJson(`opdrachten/${opdracht.id}.json`, opdracht);
+    await loadOpdrachten();
+  }
+
+  async function deleteOpdracht(id) {
+    const opdracht = getOpdrachtenSync().find((o) => o.id === id);
+    cache['opdrachten'] = undefined;
+    await window.rtti.deleteFile(`opdrachten/${id}.json`);
+    if (opdracht?.typFile) {
+      await window.rtti.deleteFile(`opdrachten/${opdracht.typFile}`);
+    }
+    await loadOpdrachten();
+  }
+
   // ── Public API ────────────────────────────────────────────────────────────
   return {
     preload,
@@ -1049,5 +1078,9 @@ const Store = (() => {
     examHasResits,
     computeBestGradeMap,
     resolveBestAttempts,
+    getOpdrachtenSync,
+    getOpdrachten,
+    upsertOpdracht,
+    deleteOpdracht,
   };
 })();
