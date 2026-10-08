@@ -234,6 +234,43 @@ ipcMain.handle('app:createAssignmentTypFile', (_event, typFile) => {
 });
 
 // ---------------------------------------------------------------------------
+// Presence (data/users/<userId>.json): who is online and where they work.
+// Only this app writes the logged-in user's file. On logout, a user switch or
+// quit the file is marked offline so colleagues see them leave right away.
+// ---------------------------------------------------------------------------
+let presence = null; // { userId, state } as last written by this app
+
+function writePresence(userId, state) {
+  const rel = `users/${userId}.json`;
+  const content = JSON.stringify(state, null, 2);
+  try {
+    writeFileAtomic(path.join(getDataDir(), rel), content);
+    watcher?.noteWrite(rel, content);
+  } catch (e) {
+    console.error('[presence] write failed:', e.message);
+  }
+}
+
+function markPresenceOffline() {
+  if (!presence) return;
+  writePresence(presence.userId, {
+    ...presence.state,
+    online: false,
+    scoreModal: null,
+    heartbeatAt: new Date().toISOString(),
+  });
+  presence = null;
+}
+
+// userId null = logged out.
+ipcMain.handle('presence:update', (_event, userId, state) => {
+  if (presence && presence.userId !== userId) markPresenceOffline();
+  if (!userId) return;
+  presence = { userId, state };
+  writePresence(userId, state);
+});
+
+// ---------------------------------------------------------------------------
 // Local session (machine-local, not synced via OneDrive)
 // Stored in app.getPath('userData'), outside the shared data/ folder.
 // ---------------------------------------------------------------------------
@@ -640,7 +677,9 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+app.on('before-quit', markPresenceOffline);
 app.on('window-all-closed', () => {
+  markPresenceOffline();
   watcher?.close();
   if (process.platform !== 'darwin') app.quit();
 });

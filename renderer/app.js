@@ -15,6 +15,7 @@ import { openEditor } from './modals/editor.js';
 import { renderGebruikers } from './screens/gebruikers.js';
 import { renderSchool } from './screens/school.js';
 import * as Sync from './sync.js';
+import * as Presence from './presence.js';
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 const topbar = document.getElementById('topbar');
@@ -162,6 +163,11 @@ function clearModalSubs() {
 /** Subscribe to background changes of `type` for as long as the current modal is open. */
 export function onModalSync(type, handler) {
   _modalSubs.push(Sync.on(type, handler));
+}
+
+/** Run fn when the current modal closes or is replaced by another one. */
+export function onModalCleanup(fn) {
+  _modalSubs.push(fn);
 }
 
 /**
@@ -817,6 +823,7 @@ export async function showUserBadge(user, subject) {
 
   await initFilterBar(user, subject);
   applyRoleVisibility(user);
+  Presence.start(user.id);
 }
 
 function applyRoleVisibility(user) {
@@ -833,6 +840,7 @@ function applyRoleVisibility(user) {
 }
 
 userBadgeBtn.addEventListener('click', () => {
+  Presence.stop();
   userBadgeBtn.classList.add('hidden');
   _adminSubjectFilter = null;
   _activeUserId = null;

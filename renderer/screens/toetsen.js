@@ -10,6 +10,7 @@ import {
   getAdminSubjectFilter,
 } from '../app.js';
 import { openScoreModal } from './scores.js';
+import * as Presence from '../presence.js';
 import { openRapportModal, openRttiUitlegModal } from '../modals/rapport.js';
 
 // ── Modal imports (used directly in this screen file) ───────────────────────
@@ -146,6 +147,31 @@ const SUBCATEGORY_TO_FILTER = {
   wisc: 'WisC',
   wisd: 'WisD',
 };
+
+// ── Presence: colleagues working in an exam's score modal ────────────────────
+function presenceSpanHtml(examId) {
+  return `<span class="presence-badges" data-presence-exam="${escHtml(examId)}"></span>`;
+}
+
+async function fillExamPresence() {
+  const container = document.getElementById('exam-list');
+  const spans = container?.querySelectorAll('[data-presence-exam]') ?? [];
+  if (spans.length === 0) return;
+  const year = SEL.toetsenYear.getValue();
+  const subject = Store.getActiveSubject();
+  const users = await Store.loadUsers();
+  spans.forEach((span) => {
+    span.innerHTML = Presence.inScoreModal(year, subject, span.dataset.presenceExam)
+      .map((o) => {
+        const user = users.find((u) => u.id === o.userId);
+        return user
+          ? Presence.badgeHtml(user, o.status, `${Store.fullName(user)} werkt hierin`)
+          : '';
+      })
+      .join('');
+  });
+}
+Presence.onChange(fillExamPresence);
 
 export async function renderToetsenList() {
   const year = SEL.toetsenYear.getValue();
@@ -293,6 +319,7 @@ export async function renderToetsenList() {
           ${statsSpanHtml(e.id)}
         </div>
         <div class="card-actions">
+          ${presenceSpanHtml(e.id)}
           <button class="btn-sm exam-card-btn" data-action="exam-overview" data-examid="${escHtml(e.id)}">Overzicht openen</button>
           <div class="card-vsep"></div>
           ${menuBtnHtml(e.id, 'attempt')}
@@ -322,6 +349,7 @@ export async function renderToetsenList() {
             ${statsSpanHtml(e.id)}
           </div>
           <div class="card-actions">
+            ${presenceSpanHtml(e.id)}
             <button class="btn-sm exam-card-btn" data-action="exam-overview" data-examid="${escHtml(e.id)}">Overzicht openen</button>
             <div class="card-vsep"></div>
             ${menuBtnHtml(e.id, 'solo')}
@@ -349,6 +377,7 @@ export async function renderToetsenList() {
     }
   }
   container.innerHTML = html;
+  fillExamPresence();
 
   // ── Event listeners ────────────────────────────────────────────────────────
   container

@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('rtti', {
   // (null = must not exist); otherwise resolves to { ok: false, reason: 'conflict' }.
   writeJson: (relPath, data, opts) => ipcRenderer.invoke('fs:writeJson', relPath, data, opts),
 
+  // Write the logged-in user's presence file (data/users/<userId>.json).
+  // userId null = logged out (the previous user's file is marked offline).
+  updatePresence: (userId, state) => ipcRenderer.invoke('presence:update', userId, state),
+
   // Subscribe to files changed on disk by other app instances (via OneDrive).
   // cb receives [{ relPath, kind: 'added'|'changed'|'deleted', meta }]. Returns an unsubscribe fn.
   onDataChanged: (cb) => {

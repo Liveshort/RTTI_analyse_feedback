@@ -16,7 +16,9 @@ import {
   onModalSync,
   showReloadNotice,
   changedByName,
+  onModalCleanup,
 } from '../app.js';
+import * as Presence from '../presence.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCREEN: Scores invoeren
@@ -58,6 +60,11 @@ let activeRoster = null;
 const pendingSaves = new Map();
 const REMOTE_FLASH_MS = 2000;
 const REMOTE_FLASH_COLOR = '#f5a623';
+// Outline color for cells changed by a colleague: the color of the colleague
+// in this modal who edited most recently (set by renderPresence).
+let remoteFlashColor = REMOTE_FLASH_COLOR;
+// One per group grid: (cursors) => draws colleagues' positions in that grid.
+let cursorUpdaters = [];
 
 async function waitForPendingSaves(timeoutMs = 5000) {
   const end = Date.now() + timeoutMs;
@@ -109,6 +116,7 @@ export function destroyHotInstances() {
   });
   hotInstances = [];
   rowUpdaters = [];
+  cursorUpdaters = [];
   activeRoster = null;
   activeGridData = [];
   activeExam = null;
@@ -139,6 +147,7 @@ export async function openScoreModal(examId, year, deps) {
             : ''
         }
         <em style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(exam.title)}</em>
+        <div id="sc-presence" class="presence-badges"></div>
       </div>
       <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
         <button class="btn-secondary" id="sc-undo" title="Ongedaan maken (Ctrl+Z)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B6;</button>
@@ -200,6 +209,11 @@ export async function openScoreModal(examId, year, deps) {
           openScoreModal(examId, year, deps);
         });
       });
+
+      // ── Presence: tell colleagues we're here, show who else is ─────────────
+      Presence.setScoreModal({ year, subject: Store.getActiveSubject(), examId });
+      onModalCleanup(() => Presence.setScoreModal(null));
+      onModalCleanup(Presence.onChange(() => renderPresence(el, examId, year)));
 
       // ── Changes made by other teachers while this modal is open ────────────
       onModalSync('scores', (ev) => {
@@ -267,10 +281,42 @@ export async function openScoreModal(examId, year, deps) {
         el.querySelector('#sc-grid-container'),
         year
       );
+      renderPresence(el, examId, year);
     },
     'modal-scores',
     deps?.renderToetsenList
   );
+}
+
+// Badges of colleagues in this score modal (green: entered scores in the last
+// 2 minutes, orange: only has it open) and their cursor positions in the grids.
+async function renderPresence(el, examId, year) {
+  const host = el.querySelector('#sc-presence');
+  if (!host) return;
+  const users = await Store.loadUsers();
+  const others = Presence.inScoreModal(year, Store.getActiveSubject(), examId)
+    .map((o) => ({ ...o, user: users.find((u) => u.id === o.userId) }))
+    .filter((o) => o.user);
+  host.innerHTML = others
+    .map((o) => {
+      const name = Store.fullName(o.user);
+      const what =
+        o.status === 'active'
+          ? 'heeft de afgelopen 2 minuten scores ingevoerd'
+          : 'heeft dit scorescherm open';
+      return Presence.badgeHtml(o.user, o.status, `${name} ${what}`);
+    })
+    .join('');
+  const active = others.find((o) => o.status === 'active');
+  remoteFlashColor = active?.user.kleur ?? REMOTE_FLASH_COLOR;
+  const cursors = others
+    .filter((o) => o.scoreModal.cell)
+    .map((o) => ({
+      ...o.scoreModal.cell,
+      color: o.user.kleur ?? '#888',
+      name: o.user.voornaam || o.user.afkorting || '?',
+    }));
+  cursorUpdaters.forEach((draw) => draw(cursors));
 }
 
 // Recalculate totals, grades and summary rows of every group (e.g. after an N-term change).
@@ -626,6 +672,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
   async function saveCell(row, col, write) {
     const key = `${students[row].id}:${col}`;
     pendingSaves.set(key, (pendingSaves.get(key) ?? 0) + 1);
+    Presence.markEdit();
     try {
       await write();
     } finally {
@@ -670,6 +717,48 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     }, REMOTE_FLASH_MS + 50);
   }
   rowUpdaters.push(applyRemoteRecord);
+
+  // ── Colleagues' cursors ───────────────────────────────────────────────────
+  // Drawn as an overlay (thick colored border + name flag) on the group's
+  // section, because table cells clip their content.
+  let remoteCursors = [];
+  const layer = container.parentElement;
+  layer.style.position = 'relative';
+
+  function cellOf({ studentId, questionId }) {
+    const row = students.findIndex((st) => String(st.id) === String(studentId));
+    if (row < 0) return null;
+    if (String(questionId).startsWith('obs:')) {
+      const oi = obsArr.findIndex((o) => `obs:${o.id}` === questionId);
+      return oi < 0 ? null : { row, col: obsStart + oi };
+    }
+    const qi = exam.questions.findIndex((q) => q.id === questionId);
+    return qi < 0 ? null : { row, col: 2 + qi };
+  }
+
+  function drawCursors() {
+    layer.querySelectorAll(':scope > .remote-cursor').forEach((n) => n.remove());
+    if (hot.isDestroyed) return;
+    const base = layer.getBoundingClientRect();
+    for (const cursor of remoteCursors) {
+      const cell = cellOf(cursor);
+      const td = cell && hot.getCell(cell.row, cell.col);
+      if (!td) continue;
+      const r = td.getBoundingClientRect();
+      const box = document.createElement('div');
+      box.className = 'remote-cursor';
+      box.style.cssText =
+        `left:${r.left - base.left}px;top:${r.top - base.top}px;` +
+        `width:${r.width}px;height:${r.height}px;--cursor-color:${cursor.color}`;
+      box.innerHTML = `<span class="remote-cursor-flag">${escHtml(cursor.name)}</span>`;
+      layer.appendChild(box);
+    }
+  }
+
+  cursorUpdaters.push((cursors) => {
+    remoteCursors = cursors;
+    drawCursors();
+  });
 
   // Question headers: RTTI (top) → pts → section → number (bottom)
   const qHeaders = exam.questions.map((q) => {
@@ -750,7 +839,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     const flashEnd = flashUntil.get(`${row}:${col}`);
     const flashing = flashEnd !== undefined && flashEnd > Date.now();
     if (flashEnd !== undefined && !flashing) flashUntil.delete(`${row}:${col}`);
-    TD.style.boxShadow = flashing ? `inset 0 0 0 2px ${REMOTE_FLASH_COLOR}` : '';
+    TD.style.boxShadow = flashing ? `inset 0 0 0 2px ${remoteFlashColor}` : '';
     const onRow = row === selectedCell.row;
     const onCol = col === selectedCell.col;
     if (!onRow && !onCol) return;
@@ -1067,7 +1156,17 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
 
       return { row: 0, col: 1 };
     },
+    afterRender() {
+      // (Also runs while HOT is being constructed, before there are cursors.)
+      if (remoteCursors.length) drawCursors();
+    },
     afterSelection(row, col) {
+      if (row < summaryIdx && students[row]) {
+        if (isQCol(col)) Presence.setPosition(students[row].id, exam.questions[col - 2].id);
+        else if (isObsCol(col)) {
+          Presence.setPosition(students[row].id, `obs:${obsArr[col - firstObsCol].id}`);
+        }
+      }
       if (selectedCell.row !== row || selectedCell.col !== col) {
         selectedCell = { row, col };
         hot.render();
