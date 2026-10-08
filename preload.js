@@ -4,8 +4,21 @@ contextBridge.exposeInMainWorld('rtti', {
   // Read a JSON file relative to the data directory.
   readJson: (relPath) => ipcRenderer.invoke('fs:readJson', relPath),
 
+  // Read a JSON file plus a hash of its content: { data, hash } or { error }.
+  readJsonVersioned: (relPath) => ipcRenderer.invoke('fs:readJsonVersioned', relPath),
+
   // Write a JSON file relative to the data directory.
-  writeJson: (relPath, data) => ipcRenderer.invoke('fs:writeJson', relPath, data),
+  // opts: { cas: true, expectedHash } only writes if the file still has that hash
+  // (null = must not exist); otherwise resolves to { ok: false, reason: 'conflict' }.
+  writeJson: (relPath, data, opts) => ipcRenderer.invoke('fs:writeJson', relPath, data, opts),
+
+  // Subscribe to files changed on disk by other app instances (via OneDrive).
+  // cb receives [{ relPath, kind: 'added'|'changed'|'deleted', meta }]. Returns an unsubscribe fn.
+  onDataChanged: (cb) => {
+    const listener = (_event, changes) => cb(changes);
+    ipcRenderer.on('data:changed', listener);
+    return () => ipcRenderer.removeListener('data:changed', listener);
+  },
 
   // List all year subfolders (e.g. ['2025-2026', '2024-2025']), newest first.
   listYears: () => ipcRenderer.invoke('fs:listYears'),

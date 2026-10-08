@@ -50,6 +50,78 @@ const Store = (() => {
     delete cache[relPath];
   }
 
+  // ── Safe read-modify-write (shared OneDrive folder) ───────────────────────
+  // update() re-reads relPath from disk, applies mutator and writes the result
+  // only if nobody changed the file in between (compare-and-swap on a content
+  // hash, checked in main.js); on a conflict it starts over with the fresh file.
+  // mutator(current, onDisk): `current` is the on-disk data (or fallback() when
+  // the file is absent) and may be mutated; onDisk is null for a new file.
+  // Throwing from the mutator aborts the write. Writes per file are serialised.
+  const writeQueues = {};
+
+  // Run fn after all earlier queued work on relPath (own writes, external refreshes).
+  function serialize(relPath, fn) {
+    const queued = (writeQueues[relPath] ?? Promise.resolve()).then(fn, fn);
+    writeQueues[relPath] = queued.catch(() => {});
+    return queued;
+  }
+
+  function update(relPath, mutator, fallback = () => null) {
+    const run = async () => {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const read = await window.rtti.readJsonVersioned(relPath);
+        if (read?.error) throw new Error(`Bestand ${relPath} is onleesbaar: ${read.error}`);
+        const next = mutator(read.data ?? fallback(), read.data);
+        const result = await window.rtti.writeJson(relPath, next, {
+          cas: true,
+          expectedHash: read.hash,
+        });
+        if (result?.ok) return next;
+        if (result?.reason !== 'conflict') {
+          throw new Error(`Save failed for ${relPath}: ${result?.reason}`);
+        }
+      }
+      throw new Error(`Save failed for ${relPath}: conflict`);
+    };
+    return serialize(relPath, run);
+  }
+
+  // Version info stored in single-object files (exams, groups, observaties, opdrachten).
+  function stampMeta(obj, onDisk) {
+    const now = new Date().toISOString();
+    const userId = _activeUser?.id ?? null;
+    const prev = onDisk?._meta;
+    obj._meta = {
+      rev: (prev?.rev ?? 0) + 1,
+      createdBy: onDisk ? (prev?.createdBy ?? null) : userId,
+      createdAt: onDisk ? (prev?.createdAt ?? null) : now,
+      updatedBy: userId,
+      updatedAt: now,
+    };
+    return obj;
+  }
+
+  // Thrown when saving an object someone else saved after it was loaded here.
+  // err.updatedBy holds the other user's id (if known). Handled globally in app.js.
+  function conflictError(meta) {
+    const err = new Error('conflict');
+    err.code = 'conflict';
+    err.updatedBy = meta?.updatedBy ?? null;
+    return err;
+  }
+
+  // Save a single-object file. baseRev is the _meta.rev of the version the edit
+  // started from; if the file on disk has moved on since, nothing is written.
+  // force: overwrite regardless (deliberate replacements such as a CSV import).
+  function saveEntity(relPath, entity, baseRev, { force = false } = {}) {
+    return update(relPath, (_current, onDisk) => {
+      if (!force && onDisk && (onDisk._meta?.rev ?? 0) !== (baseRev ?? 0)) {
+        throw conflictError(onDisk._meta);
+      }
+      return stampMeta({ ...entity }, onDisk);
+    });
+  }
+
   // ── Active subject ─────────────────────────────────────────────────────────
   function setActiveSubject(s) {
     _activeSubject = s;
@@ -84,11 +156,16 @@ const Store = (() => {
   }
 
   async function upsertUser(user) {
-    const users = await loadUsers();
-    const idx = users.findIndex((u) => u.id === user.id);
-    if (idx >= 0) users[idx] = user;
-    else users.push(user);
-    await save('gebruikers.json', users);
+    cache['gebruikers.json'] = await update(
+      'gebruikers.json',
+      (users) => {
+        const idx = users.findIndex((u) => u.id === user.id);
+        if (idx >= 0) users[idx] = user;
+        else users.push(user);
+        return users;
+      },
+      () => []
+    );
   }
 
   // ── Session (machine-local, not synced via OneDrive) ──────────────────────
@@ -330,8 +407,17 @@ const Store = (() => {
     await save(ypStudents(year), list);
   }
 
-  async function upsertStudent(student, year) {
-    const list = await getStudents(year);
+  // The students file is one shared array per year, so every change is applied
+  // to the latest version on disk (per student) instead of rewriting the cached list.
+  async function updateStudents(year, mutator) {
+    cache[ypStudents(year)] = await update(
+      ypStudents(year),
+      (list) => sortStudents(mutator(list)),
+      () => []
+    );
+  }
+
+  function mergeStudent(list, student) {
     const flat = {
       id: student.id,
       voornaam: student.voornaam ?? '',
@@ -345,35 +431,24 @@ const Store = (() => {
     const idx = list.findIndex((s) => s.id === flat.id);
     if (idx >= 0) list[idx] = { ...list[idx], ...flat };
     else list.push(flat);
-    await saveStudents(list, year);
+  }
+
+  async function upsertStudent(student, year) {
+    await updateStudents(year, (list) => {
+      mergeStudent(list, student);
+      return list;
+    });
   }
 
   async function upsertStudents(students, year) {
-    const list = await getStudents(year);
-    for (const student of students) {
-      const flat = {
-        id: student.id,
-        voornaam: student.voornaam ?? '',
-        tussenvoegsel: student.tussenvoegsel ?? '',
-        achternaam: student.achternaam ?? student.name ?? '',
-        stamklas: student.stamklas ?? '',
-        geslacht: student.geslacht ?? '',
-        jaarlaag: student.jaarlaag ?? '',
-        schoolsoort: student.schoolsoort ?? [],
-      };
-      const idx = list.findIndex((s) => s.id === flat.id);
-      if (idx >= 0) list[idx] = { ...list[idx], ...flat };
-      else list.push(flat);
-    }
-    await saveStudents(list, year);
+    await updateStudents(year, (list) => {
+      for (const student of students) mergeStudent(list, student);
+      return list;
+    });
   }
 
   async function deleteStudent(id, year) {
-    const list = await getStudents(year);
-    await saveStudents(
-      list.filter((s) => s.id !== id),
-      year
-    );
+    await updateStudents(year, (list) => list.filter((s) => s.id !== id));
   }
 
   // ── Groups (year-scoped, subject-filtered) ────────────────────────────────
@@ -381,22 +456,28 @@ const Store = (() => {
     return loadGroups(year, subject);
   }
 
-  async function upsertGroup(group, year) {
+  async function upsertGroup(group, year, { force = false } = {}) {
     const subj = group.subject ?? subjectFromGroupName(group.name) ?? _activeSubject;
     const { academic_year: _ay, ...clean } = group;
     const updated = { ...clean, subject: subj };
-    await window.rtti.writeJson(ypGroup(year, updated.id), updated);
+    const saved = await saveEntity(ypGroup(year, updated.id), updated, updated._meta?.rev, {
+      force,
+    });
     const key = `${year}/groups/${subj}`;
-    const arr = cache[key] ?? [];
-    const i = arr.findIndex((g) => g.id === updated.id);
-    if (i >= 0) arr[i] = updated;
-    else arr.push(updated);
-    cache[key] = arr;
+    cache[key] = cache[key] ?? [];
+    for (const k of [key, `${year}/groups/__all__`]) {
+      const arr = cache[k];
+      if (!arr) continue;
+      const i = arr.findIndex((g) => g.id === saved.id);
+      if (i >= 0) arr[i] = saved;
+      else arr.push(saved);
+    }
   }
 
+  // Bulk import: replaces existing groups with the same id.
   async function upsertGroups(groups, year) {
     for (const group of groups) {
-      await upsertGroup(group, year);
+      await upsertGroup(group, year, { force: true });
     }
   }
 
@@ -442,9 +523,10 @@ const Store = (() => {
     const key = `${year}/exams/${subj}`;
     const arr = cache[key] ?? [];
     const i = arr.findIndex((e) => e.id === updated.id);
+    let merged = updated;
     if (i >= 0) {
       updated.volgnummer = updated.volgnummer ?? arr[i].volgnummer;
-      arr[i] = { ...arr[i], ...updated };
+      merged = { ...arr[i], ...updated };
     } else {
       if (!updated.volgnummer) {
         const jl = parseInt(updated.jaarlaag, 10);
@@ -457,10 +539,30 @@ const Store = (() => {
           updated.volgnummer = jl * 100 + maxSeq + 1;
         }
       }
-      arr.push(updated);
     }
+    const saved = await saveEntity(ypExam(year, merged.id), merged, merged._meta?.rev);
+    putCachedExam(key, saved);
+    return saved;
+  }
+
+  function putCachedExam(key, exam) {
+    const arr = cache[key] ?? [];
+    const i = arr.findIndex((e) => e.id === exam.id);
+    if (i >= 0) arr[i] = exam;
+    else arr.push(exam);
     cache[key] = arr;
-    await window.rtti.writeJson(ypExam(year, updated.id), updated);
+  }
+
+  // The N-term is merged into the latest version on disk without a conflict
+  // check: it is a single value, and other edits to the exam must not be lost.
+  async function setExamNTerm(examId, nTerm, year, subject = _activeSubject) {
+    const saved = await update(ypExam(year, examId), (exam, onDisk) => {
+      if (!onDisk) throw new Error(`Toets ${examId} bestaat niet meer.`);
+      exam.n_term = nTerm;
+      return stampMeta(exam, onDisk);
+    });
+    putCachedExam(`${year}/exams/${saved.subject ?? subject}`, saved);
+    return saved;
   }
 
   async function deleteExam(id, year) {
@@ -484,12 +586,28 @@ const Store = (() => {
     await save(file, record);
   }
 
+  // Apply a change to the latest version of a student's score file on disk, so
+  // scores another teacher saved in the meantime (other exams, other cells) are kept.
+  async function updateStudentScores(studentId, year, subject, mutator) {
+    const file = ypScore(year, subject, studentId);
+    cache[file] = await update(
+      file,
+      (rec) => {
+        if (!rec.scores) rec.scores = {};
+        mutator(rec);
+        return rec;
+      },
+      () => ({ student_id: studentId, scores: {} })
+    );
+    return cache[file];
+  }
+
   async function setScore(studentId, examId, questionId, value, year) {
-    const record = await getStudentScores(studentId, year);
-    if (!record.scores[examId]) record.scores[examId] = {};
-    if (value === undefined) delete record.scores[examId][questionId];
-    else record.scores[examId][questionId] = value;
-    await saveStudentScores(record, year);
+    await updateStudentScores(studentId, year, _activeSubject, (rec) => {
+      if (!rec.scores[examId]) rec.scores[examId] = {};
+      if (value === undefined) delete rec.scores[examId][questionId];
+      else rec.scores[examId][questionId] = value;
+    });
   }
 
   async function getStudentHistory(studentId, subject = _activeSubject) {
@@ -619,7 +737,7 @@ const Store = (() => {
           : [subject];
     const updated = { ...obs, subjects };
     delete updated.subject;
-    await window.rtti.writeJson(ypObs(updated.id), updated);
+    await saveEntity(ypObs(updated.id), updated, updated._meta?.rev);
     // Other subjects' caches may be affected too (multi-subject obs), so drop
     // them all and reload the active one so sync getters stay populated.
     invalidateObsCache();
@@ -633,16 +751,16 @@ const Store = (() => {
   }
 
   async function setObservation(studentId, examId, obsId, checked, year) {
-    const rec = await getStudentScores(studentId, year);
-    if (!rec.observations) rec.observations = {};
-    if (!rec.observations[examId]) rec.observations[examId] = [];
-    if (checked) {
-      if (!rec.observations[examId].includes(obsId)) rec.observations[examId].push(obsId);
-    } else {
-      rec.observations[examId] = rec.observations[examId].filter((id) => id !== obsId);
-      if (rec.observations[examId].length === 0) delete rec.observations[examId];
-    }
-    await saveStudentScores(rec, year);
+    await updateStudentScores(studentId, year, _activeSubject, (rec) => {
+      if (!rec.observations) rec.observations = {};
+      if (!rec.observations[examId]) rec.observations[examId] = [];
+      if (checked) {
+        if (!rec.observations[examId].includes(obsId)) rec.observations[examId].push(obsId);
+      } else {
+        rec.observations[examId] = rec.observations[examId].filter((id) => id !== obsId);
+        if (rec.observations[examId].length === 0) delete rec.observations[examId];
+      }
+    });
   }
 
   async function preloadScores(year, subject = _activeSubject) {
@@ -965,10 +1083,11 @@ const Store = (() => {
     await Promise.all(
       students.map(async (s) => {
         const rec = await getStudentScores(s.id, year, subject);
-        const arr = rec.observations?.[examId];
-        if (!arr || !arr.includes(obsId)) return;
-        rec.observations[examId] = arr.filter((id) => id !== obsId);
-        await saveStudentScores(rec, year, subject);
+        if (!rec.observations?.[examId]?.includes(obsId)) return;
+        await updateStudentScores(s.id, year, subject, (fresh) => {
+          const arr = fresh.observations?.[examId];
+          if (arr) fresh.observations[examId] = arr.filter((id) => id !== obsId);
+        });
       })
     );
   }
@@ -991,8 +1110,10 @@ const Store = (() => {
   }
 
   async function upsertOpdracht(opdracht) {
+    const baseRev =
+      opdracht._meta?.rev ?? getOpdrachtenSync().find((o) => o.id === opdracht.id)?._meta?.rev;
+    await saveEntity(`opdrachten/${opdracht.id}.json`, opdracht, baseRev);
     cache['opdrachten'] = undefined;
-    await window.rtti.writeJson(`opdrachten/${opdracht.id}.json`, opdracht);
     await loadOpdrachten();
   }
 
@@ -1006,8 +1127,160 @@ const Store = (() => {
     await loadOpdrachten();
   }
 
+  // ── External changes (other teachers, reported by the watcher in main.js) ──
+  // Brings the cache up to date for one changed file and describes the change:
+  //   { type, kind, relPath, year, subject, id, before, after, meta, inScope }
+  // type: 'scores' | 'exam' | 'group' | 'students' | 'observatie' | 'opdracht'
+  //       | 'opdrachtTyp' | 'gebruikers' | 'school' | 'presence' | 'other'
+  // Only data that is already cached is re-read; the rest loads lazily as before.
+  // inScope: the change concerns the active subject (admin: any) and active year.
+  const YEAR = '(\\d{4}-\\d{4})';
+  const EXTERNAL_PATTERNS = [
+    ['scores', new RegExp(`^${YEAR}/scores/([^/]+)/([^/]+)\\.json$`)],
+    ['exam', new RegExp(`^${YEAR}/exams/([^/]+)\\.json$`)],
+    ['group', new RegExp(`^${YEAR}/groups/([^/]+)\\.json$`)],
+    ['students', new RegExp(`^${YEAR}/students-\\d{4}-\\d{4}\\.json$`)],
+    ['observatie', /^observaties\/([^/]+)\.json$/],
+    ['opdracht', /^opdrachten\/([^/]+)\.json$/],
+    ['opdrachtTyp', /^opdrachten\/([^/]+)\.typ$/],
+    ['gebruikers', /^gebruikers\.json$/],
+    ['school', /^school\.json$/],
+    ['presence', /^users\/([^/]+)\.json$/],
+  ];
+
+  // Replace (or remove, when `item` is null) the entry with this id in every
+  // loaded cache array whose key starts with prefix; add it to the arrays in
+  // `targetKeys` that are loaded but don't contain it yet. Returns the old entry.
+  function patchCachedArrays(prefix, id, item, targetKeys) {
+    let before = null;
+    for (const key of Object.keys(cache)) {
+      if (!key.startsWith(prefix) || !Array.isArray(cache[key])) continue;
+      const arr = cache[key];
+      const i = arr.findIndex((x) => x.id === id);
+      if (i < 0) continue;
+      before = before ?? arr[i];
+      if (item && targetKeys.includes(key)) arr[i] = item;
+      else arr.splice(i, 1);
+    }
+    if (item) {
+      for (const key of targetKeys) {
+        const arr = cache[key];
+        if (Array.isArray(arr) && !arr.some((x) => x.id === id)) arr.push(item);
+      }
+    }
+    return before;
+  }
+
+  async function applyExternalChange({ relPath, kind, meta }) {
+    let type = 'other';
+    let match = null;
+    for (const [t, re] of EXTERNAL_PATTERNS) {
+      match = relPath.match(re);
+      if (match) {
+        type = t;
+        break;
+      }
+    }
+    const ev = { type, kind, relPath, meta, year: null, subject: null, id: null };
+    ev.before = null;
+    ev.after = null;
+    const readFresh = async () => (kind === 'deleted' ? null : window.rtti.readJson(relPath));
+
+    // Serialised with own writes to the same file, so a refresh can never put an
+    // older version in the cache than one this app just wrote.
+    await serialize(relPath, async () => {
+      switch (type) {
+        case 'scores': {
+          [, ev.year, ev.subject, ev.id] = match;
+          if (cache[relPath] === undefined) break;
+          ev.before = cache[relPath];
+          ev.after = await readFresh();
+          cache[relPath] = ev.after;
+          break;
+        }
+        case 'exam': {
+          [, ev.year, ev.id] = match;
+          ev.after = await readFresh();
+          const subj = ev.after?.subject;
+          ev.before = patchCachedArrays(
+            `${ev.year}/exams/`,
+            ev.id,
+            ev.after,
+            subj ? [`${ev.year}/exams/${subj}`] : []
+          );
+          ev.subject = subj ?? ev.before?.subject ?? null;
+          break;
+        }
+        case 'group': {
+          [, ev.year, ev.id] = match;
+          ev.after = await readFresh();
+          const subj = ev.after?.subject;
+          ev.before = patchCachedArrays(
+            `${ev.year}/groups/`,
+            ev.id,
+            ev.after,
+            [subj && `${ev.year}/groups/${subj}`, `${ev.year}/groups/__all__`].filter(Boolean)
+          );
+          ev.subject = subj ?? ev.before?.subject ?? null;
+          break;
+        }
+        case 'students': {
+          ev.year = match[1];
+          if (cache[relPath] === undefined) break;
+          ev.before = cache[relPath];
+          ev.after = (await readFresh()) ?? [];
+          cache[relPath] = ev.after;
+          break;
+        }
+        case 'observatie': {
+          ev.id = match[1];
+          ev.before = getObservatiesSync().find((o) => o.id === ev.id) ?? null;
+          ev.after = await readFresh();
+          invalidateObsCache();
+          if (_activeSubject) await loadObservaties(_activeSubject);
+          break;
+        }
+        case 'opdracht': {
+          ev.id = match[1];
+          ev.before = getOpdrachtenSync().find((o) => o.id === ev.id) ?? null;
+          ev.after = await readFresh();
+          if (cache['opdrachten'] !== undefined) {
+            cache['opdrachten'] = undefined;
+            await loadOpdrachten();
+          }
+          break;
+        }
+        case 'opdrachtTyp':
+        case 'presence':
+          ev.id = match[1];
+          ev.after = await readFresh();
+          break;
+        case 'gebruikers':
+        case 'school':
+          if (cache[relPath] === undefined) break;
+          ev.before = cache[relPath];
+          ev.after = await readFresh();
+          cache[relPath] = ev.after;
+          break;
+      }
+    });
+
+    ev.inScope = changeIsInScope(ev);
+    return ev;
+  }
+
+  function changeIsInScope(ev) {
+    if (ev.year && ev.year !== getConfigSync().activeYear) return false;
+    if (!_activeSubject) return true; // admin (or not logged in): every subject
+    if (ev.type === 'observatie') {
+      return [ev.before, ev.after].some((o) => o && obsMatchesSubject(o, _activeSubject));
+    }
+    return !ev.subject || ev.subject === _activeSubject;
+  }
+
   // ── Public API ────────────────────────────────────────────────────────────
   return {
+    applyExternalChange,
     preload,
     initSubject,
     loadYear,
@@ -1056,6 +1329,7 @@ const Store = (() => {
     getStudentGroup,
     getExams,
     upsertExam,
+    setExamNTerm,
     deleteExam,
     getStudentScores,
     saveStudentScores,

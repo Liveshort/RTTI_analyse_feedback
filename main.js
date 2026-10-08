@@ -2,6 +2,10 @@ const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
+const { hashContent, readWithHash, writeFileAtomic, createWatcher } = require('./sync');
+
+// Watches data/ for changes made by other teachers; created in app.whenReady().
+let watcher = null;
 
 // ---------------------------------------------------------------------------
 // App directory: next to the executable (or next to main.js in dev).
@@ -58,17 +62,45 @@ ipcMain.handle('fs:readJson', (_event, relPath) => {
   }
 });
 
-// Write any JSON file relative to the data directory.
+// Read a JSON file together with the hash of its content, for compare-and-swap writes.
+// Returns { data, hash } (both null if the file does not exist) or { error } if it
+// exists but cannot be parsed — callers must not overwrite such a file.
+ipcMain.handle('fs:readJsonVersioned', (_event, relPath) => {
+  const filePath = path.join(getDataDir(), relPath);
+  try {
+    const file = readWithHash(filePath);
+    if (!file) return { data: null, hash: null };
+    return { data: JSON.parse(file.buf.toString('utf8')), hash: file.hash };
+  } catch (e) {
+    console.error('readJsonVersioned error:', filePath, e.message);
+    return { error: e.message };
+  }
+});
+
+// Write any JSON file relative to the data directory (atomically).
 // Score files (inside a 'scores' folder) skip locking; everything else is locked.
-ipcMain.handle('fs:writeJson', (_event, relPath, data) => {
+// opts.cas: only write if the file's current hash equals opts.expectedHash
+// (null = the file must not exist yet); otherwise returns reason 'conflict'.
+ipcMain.handle('fs:writeJson', (_event, relPath, data, opts = {}) => {
   const filePath = path.join(getDataDir(), relPath);
   const isScore = relPath.includes('/scores/');
 
+  const write = () => {
+    if (opts.cas) {
+      const current = readWithHash(filePath);
+      if ((current?.hash ?? null) !== (opts.expectedHash ?? null)) {
+        return { ok: false, reason: 'conflict' };
+      }
+    }
+    const content = JSON.stringify(data, null, 2);
+    writeFileAtomic(filePath, content);
+    watcher?.noteWrite(relPath, content);
+    return { ok: true, hash: hashContent(content) };
+  };
+
   if (isScore) {
     try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
-      return { ok: true };
+      return write();
     } catch (e) {
       return { ok: false, reason: e.message };
     }
@@ -77,8 +109,7 @@ ipcMain.handle('fs:writeJson', (_event, relPath, data) => {
     const acquired = acquireLock(filePath);
     if (!acquired) return { ok: false, reason: 'locked' };
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
-      return { ok: true };
+      return write();
     } catch (e) {
       return { ok: false, reason: e.message };
     } finally {
@@ -151,6 +182,7 @@ ipcMain.handle('fs:deleteFile', (_event, relPath) => {
   if (isScore) {
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      watcher?.noteDelete(relPath);
       return { ok: true };
     } catch (e) {
       return { ok: false, reason: e.message };
@@ -160,6 +192,7 @@ ipcMain.handle('fs:deleteFile', (_event, relPath) => {
     if (!acquired) return { ok: false, reason: 'locked' };
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      watcher?.noteDelete(relPath);
       return { ok: true };
     } catch (e) {
       return { ok: false, reason: e.message };
@@ -187,17 +220,16 @@ ipcMain.handle('fs:readTextFile', (_event, relPath) => {
 // Write a plain text file relative to the data directory (creates dirs if needed).
 ipcMain.handle('fs:writeTextFile', (_event, relPath, content) => {
   const abs = path.join(getDataDir(), relPath);
-  fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(abs, content, 'utf8');
+  writeFileAtomic(abs, content);
+  watcher?.noteWrite(relPath, content);
   return { ok: true };
 });
 
 // Copy the base_assignment.typ template to data/opdrachten/<typFile>.
 ipcMain.handle('app:createAssignmentTypFile', (_event, typFile) => {
-  const src = path.join(getTemplatesDir(), 'base_assignment.typ');
-  const dest = path.join(getDataDir(), 'opdrachten', typFile);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
+  const content = fs.readFileSync(path.join(getTemplatesDir(), 'base_assignment.typ'), 'utf8');
+  writeFileAtomic(path.join(getDataDir(), 'opdrachten', typFile), content);
+  watcher?.noteWrite(`opdrachten/${typFile}`, content);
   return { ok: true };
 });
 
@@ -558,10 +590,13 @@ function getTemplatesDir() {
 function seedInitialData() {
   const dataDir = getDataDir();
 
-  // Always overwrite lib.typ — it is app-managed, not teacher-edited.
-  const opdrachtenDir = path.join(dataDir, 'opdrachten');
-  fs.mkdirSync(opdrachtenDir, { recursive: true });
-  fs.copyFileSync(path.join(getTemplatesDir(), 'lib.typ'), path.join(opdrachtenDir, 'lib.typ'));
+  // Always keep lib.typ in sync with the app — it is app-managed, not teacher-edited.
+  // Only write when it differs, so a startup doesn't show up as a change for everyone.
+  const libSrc = fs.readFileSync(path.join(getTemplatesDir(), 'lib.typ'));
+  const libDest = path.join(dataDir, 'opdrachten', 'lib.typ');
+  if (readWithHash(libDest)?.hash !== hashContent(libSrc)) {
+    writeFileAtomic(libDest, libSrc);
+  }
 
   const gebruikersPath = path.join(dataDir, 'gebruikers.json');
   if (!fs.existsSync(gebruikersPath)) {
@@ -593,11 +628,19 @@ function seedInitialData() {
 app.whenReady().then(() => {
   seedInitialData();
   cleanupStalePreviewFiles();
+  watcher = createWatcher(getDataDir(), {
+    onChanges: (changes) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('data:changed', changes);
+      }
+    },
+  });
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 app.on('window-all-closed', () => {
+  watcher?.close();
   if (process.platform !== 'darwin') app.quit();
 });

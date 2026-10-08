@@ -130,7 +130,7 @@ export async function openScoreModal(examId, year, deps) {
         const val = spinnerValue(ntermSp);
         if (isNaN(val) || !activeExam) return;
         activeExam.n_term = val;
-        await Store.upsertExam({ ...activeExam }, year);
+        await Store.setExamNTerm(activeExam.id, val, year);
         activeGridData.forEach((gd) => {
           const ai = gd.findIndex((r) => r[0] === '__avg__');
           const si2 = gd.findIndex((r) => r[0] === '__std__');

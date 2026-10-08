@@ -14,6 +14,7 @@ import { renderOpdrachten } from './screens/opdrachten.js';
 import { openEditor } from './modals/editor.js';
 import { renderGebruikers } from './screens/gebruikers.js';
 import { renderSchool } from './screens/school.js';
+import * as Sync from './sync.js';
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 const topbar = document.getElementById('topbar');
@@ -52,6 +53,7 @@ export function navigateTo(name) {
     .getElementById('btn-filter-eigen')
     .classList.toggle('filter-screen-hidden', name === 'opdrachten');
 
+  _screenRefreshPending = false;
   if (screens[name]) {
     renderScreen(name); // render content (may be async; screen shows immediately)
     screens[name].classList.add('active');
@@ -127,6 +129,7 @@ export function closeModal() {
   const cb = _onCloseModal;
   _onCloseModal = null;
   if (cb) cb();
+  if (_screenRefreshPending) scheduleScreenRefresh();
 }
 
 modalContent.addEventListener('click', (e) => {
@@ -767,6 +770,95 @@ async function applyWatermerk() {
   const dataUrl = await window.rtti.readPhotoAsDataUrl('fotos/school-watermerk.svg');
   if (dataUrl) document.documentElement.style.setProperty('--watermerk-url', `url("${dataUrl}")`);
 }
+
+// ── Save conflicts ────────────────────────────────────────────────────────────
+// Store throws { code: 'conflict' } when saving something another teacher changed
+// after it was opened here. The save is aborted, so the open modal stays as it is.
+window.addEventListener('unhandledrejection', async (e) => {
+  if (e.reason?.code !== 'conflict') return;
+  e.preventDefault();
+  const users = await Store.loadUsers();
+  const other = users.find((u) => u.id === e.reason.updatedBy);
+  const door = other ? ` door ${Store.fullName(other)}` : '';
+  persistentError(
+    `Niet opgeslagen: dit is intussen${door} gewijzigd. Sluit het venster en open het opnieuw.`
+  );
+});
+
+// ── Background changes (other teachers) ──────────────────────────────────────
+// The visible list is redrawn when data it shows changes in the background.
+// Filters, the selected year and the scroll position are kept. While a modal or
+// an exam menu is open the redraw waits, so nothing moves under the user's hands.
+// The school screen is left alone: it is edited inline.
+const SCREEN_REFRESH = {
+  leerlingen: {
+    types: ['students', 'group'],
+    year: () => leerlingenState.year,
+    render: () => renderStudentList(),
+  },
+  groepen: {
+    types: ['group', 'students', 'exam', 'scores'],
+    year: () => SEL.groupsYear.getValue(),
+    render: () => renderGroepenForYear(SEL.groupsYear.getValue()),
+  },
+  toetsen: {
+    types: ['exam', 'scores', 'group'],
+    year: () => SEL.toetsenYear.getValue(),
+    render: () => renderToetsenList(),
+  },
+  observaties: {
+    types: ['observatie', 'group'],
+    year: () => Store.getConfigSync().activeYear,
+    render: () => renderObservaties(),
+  },
+  opdrachten: { types: ['opdracht', 'observatie'], render: () => renderOpdrachten() },
+  gebruikers: { types: ['gebruikers'], render: () => renderGebruikers() },
+};
+
+const SCREEN_REFRESH_DELAY_MS = 750;
+let _screenRefreshPending = false;
+let _screenRefreshTimer = null;
+
+function activeScreenName() {
+  return document.querySelector('.screen.active')?.id.replace('screen-', '') ?? null;
+}
+
+function scheduleScreenRefresh() {
+  _screenRefreshPending = true;
+  clearTimeout(_screenRefreshTimer);
+  _screenRefreshTimer = setTimeout(runScreenRefresh, SCREEN_REFRESH_DELAY_MS);
+}
+
+async function runScreenRefresh() {
+  _screenRefreshTimer = null;
+  if (!_screenRefreshPending) return;
+  if (!overlay.classList.contains('hidden')) return; // closeModal() picks it up
+  if (document.querySelector('.exam-menu')) {
+    _screenRefreshTimer = setTimeout(runScreenRefresh, 2000);
+    return;
+  }
+  _screenRefreshPending = false;
+  const name = activeScreenName();
+  const cfg = SCREEN_REFRESH[name];
+  if (!cfg) return;
+  const pageScroller = document.scrollingElement;
+  const pageY = pageScroller.scrollTop;
+  const screenY = screens[name].scrollTop;
+  await cfg.render();
+  pageScroller.scrollTop = pageY;
+  screens[name].scrollTop = screenY;
+}
+
+Sync.on('*', (ev) => {
+  const cfg = SCREEN_REFRESH[activeScreenName()];
+  if (!cfg || !cfg.types.includes(ev.type)) return;
+  const shownYear = cfg.year?.();
+  if (ev.year && shownYear && ev.year !== shownYear) return;
+  const subject = Store.getActiveSubject();
+  if (ev.subject && subject && ev.subject !== subject) return;
+  scheduleScreenRefresh();
+});
+Sync.start();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
