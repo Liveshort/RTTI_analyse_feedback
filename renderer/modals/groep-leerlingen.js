@@ -1,8 +1,23 @@
 // ── Group students modal ──────────────────────────────────────────────────────
-import { showModal, escHtml, formatGrade } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  escHtml,
+  formatGrade,
+  onModalSync,
+  showReloadNotice,
+  changedByName,
+  modalRefresher,
+} from '../app.js';
 import { lerpColor, examTypeColor } from '../utils/colors.js';
 import { gradeTextColor, gradeBorderColor } from '../utils/grades.js';
 import { openProfielModal } from './profiel.js';
+
+// The version of one student in a students-file change (before, after), as JSON.
+function studentVersions(ev, id) {
+  const find = (list) => JSON.stringify((list ?? []).find((s) => s.id === id) ?? null);
+  return [find(ev.before), find(ev.after)];
+}
 
 export async function openGroupStudentsModal(groupId, year) {
   const group = Store.getGroupsSync(year).find((g) => g.id === groupId);
@@ -294,6 +309,41 @@ export async function openGroupStudentsModal(groupId, year) {
     </div>
   `,
     (el) => {
+      // Background changes: new scores and exam edits refresh this overview
+      // silently; changes to the group or its students need a notice.
+      const reopen = () => openGroupStudentsModal(groupId, year);
+      const refresh = modalRefresher(reopen);
+      onModalSync('scores', (ev) => {
+        if (ev.year !== year || ev.subject !== Store.getActiveSubject()) return;
+        if (group.student_ids.some((id) => String(id) === ev.id)) refresh();
+      });
+      onModalSync('exam', (ev) => {
+        if (ev.year === year) refresh();
+      });
+      onModalSync('group', async (ev) => {
+        if (ev.id !== groupId || ev.year !== year) return;
+        const who = await changedByName(ev);
+        if (!ev.after) showReloadNotice(`Deze groep is verwijderd door ${who}.`, closeModal);
+        else {
+          showReloadNotice(
+            `Deze groep is gewijzigd door ${who}. Het venster wordt opnieuw geladen.`,
+            reopen
+          );
+        }
+      });
+      onModalSync('students', (ev) => {
+        if (ev.year !== year) return;
+        const changed = group.student_ids.some((id) => {
+          const [before, after] = studentVersions(ev, id);
+          return before !== after;
+        });
+        if (!changed) return;
+        showReloadNotice(
+          'Leerlinggegevens zijn gewijzigd door een collega. Het venster wordt opnieuw geladen.',
+          reopen
+        );
+      });
+
       el.querySelectorAll('[data-action="open-student-from-group"]').forEach((b) =>
         b.addEventListener('click', () =>
           openProfielModal(

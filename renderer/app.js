@@ -104,7 +104,19 @@ export function pushModalChart(chart) {
 
 let _onCloseModal = null;
 
+function destroyModalCharts() {
+  _modalCharts.forEach((c) => {
+    try {
+      c.destroy();
+    } catch (_) {}
+  });
+  _modalCharts = [];
+}
+
 export function showModal(html, onShow, wide = false, onClose) {
+  _modalSession++;
+  clearModalSubs();
+  destroyModalCharts();
   modalContent.innerHTML = html;
   modalBox.classList.remove('modal-xl', 'modal-scores', 'modal-profile', 'modal-pdf');
   if (wide === true) modalBox.classList.add('modal-xl');
@@ -115,17 +127,12 @@ export function showModal(html, onShow, wide = false, onClose) {
 }
 
 export function closeModal() {
+  _modalSession++;
+  clearModalSubs();
   overlay.classList.add('hidden');
   modalBox.classList.remove('modal-xl', 'modal-scores', 'modal-profile', 'modal-pdf');
   modalContent.innerHTML = '';
-  if (_modalCharts) {
-    _modalCharts.forEach((c) => {
-      try {
-        c.destroy();
-      } catch (_) {}
-    });
-    _modalCharts = [];
-  }
+  destroyModalCharts();
   const cb = _onCloseModal;
   _onCloseModal = null;
   if (cb) cb();
@@ -139,6 +146,74 @@ document.getElementById('modal-close').addEventListener('click', closeModal);
 overlay.addEventListener('click', (e) => {
   if (e.target === overlay) closeModal();
 });
+
+// ── Background changes while a modal is open ──────────────────────────────────
+// Subscriptions made with onModalSync() end automatically when the modal closes
+// or is replaced by another one, so modals never react to changes after they
+// are gone. _modalSession changes on every open/close for the same reason.
+let _modalSubs = [];
+let _modalSession = 0;
+
+function clearModalSubs() {
+  _modalSubs.forEach((off) => off());
+  _modalSubs = [];
+}
+
+/** Subscribe to background changes of `type` for as long as the current modal is open. */
+export function onModalSync(type, handler) {
+  _modalSubs.push(Sync.on(type, handler));
+}
+
+/**
+ * Returns a function that runs `reopen` (re-running the modal's open function)
+ * at most once per `ms`, keeping the modal's scroll position. Does nothing if
+ * the modal has been closed or replaced in the meantime. Used for modals that
+ * only display data, so they can refresh silently.
+ */
+export function modalRefresher(reopen, ms = 500) {
+  const session = _modalSession;
+  let timer = null;
+  return () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (session !== _modalSession || document.getElementById('reload-notice')) return;
+      const y = modalBox.scrollTop;
+      await reopen();
+      modalBox.scrollTop = y;
+    }, ms);
+  };
+}
+
+/** Full name of the user who made a background change, or 'een collega' if unknown. */
+export async function changedByName(ev) {
+  const id = ev.meta?.updatedBy ?? ev.after?._meta?.updatedBy;
+  const user = id ? (await Store.loadUsers()).find((u) => u.id === id) : null;
+  return user ? Store.fullName(user) : 'een collega';
+}
+
+/**
+ * Blocking notice on top of an open modal whose data changed in the background.
+ * OK calls onOk (typically: close and reopen the modal). Only one notice is
+ * shown at a time; the reload that follows picks up any later changes too.
+ */
+export function showReloadNotice(message, onOk) {
+  if (document.getElementById('reload-notice')) return;
+  const el = document.createElement('div');
+  el.id = 'reload-notice';
+  el.className = 'reload-notice-backdrop';
+  el.innerHTML = `
+    <div class="reload-notice" role="alertdialog" aria-modal="true" aria-labelledby="reload-notice-msg">
+      <p id="reload-notice-msg">${escHtml(message)}</p>
+      <button class="btn-primary">OK</button>
+    </div>`;
+  const btn = el.querySelector('button');
+  btn.addEventListener('click', async () => {
+    el.remove();
+    await onOk?.();
+  });
+  document.body.appendChild(el);
+  btn.focus();
+}
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 export function toast(message, type = 'info') {

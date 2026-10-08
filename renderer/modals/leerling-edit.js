@@ -1,5 +1,13 @@
 // ── Student add/edit & CSV import modals ─────────────────────────────────────
-import { showModal, closeModal, toast, escHtml, overlayElement } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  toast,
+  escHtml,
+  overlayElement,
+  onModalSync,
+  showReloadNotice,
+} from '../app.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
 import {
   leerlingenState,
@@ -8,6 +16,12 @@ import {
   JAARLAGEN,
   SCHOOLSOORTEN,
 } from '../screens/leerlingen.js';
+
+// The version of one student in a students-file change (before, after), as JSON.
+function studentVersions(ev, id) {
+  const find = (list) => JSON.stringify((list ?? []).find((s) => s.id === id) ?? null);
+  return [find(ev.before), find(ev.after)];
+}
 
 export function openStudentModal(id) {
   const jaarlaagHtml = JAARLAGEN.map(
@@ -76,6 +90,26 @@ export function openStudentModal(id) {
     async (el) => {
       const year = leerlingenState.year || Store.getConfigSync().activeYear;
       el.querySelector('#f-syear-label').textContent = year;
+
+      // Someone else changed or removed this student while it is being edited.
+      if (id) {
+        onModalSync('students', (ev) => {
+          if (ev.year !== year) return;
+          const [before, after] = studentVersions(ev, id);
+          if (before === after) return;
+          if (after === 'null') {
+            showReloadNotice('Deze leerling is verwijderd door een collega.', () => {
+              closeModal();
+              renderStudentList();
+            });
+          } else {
+            showReloadNotice(
+              'De gegevens van deze leerling zijn gewijzigd door een collega. Het venster wordt opnieuw geladen.',
+              () => openStudentModal(id)
+            );
+          }
+        });
+      }
 
       const geslachtSel = new CustomSelect(el.querySelector('#f-sgeslacht-host'), {
         placeholder: '—',

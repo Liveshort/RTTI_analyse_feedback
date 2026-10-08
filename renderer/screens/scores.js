@@ -6,7 +6,17 @@ import {
   examTypeColor,
 } from '../utils/colors.js';
 import { wireSpinners, spinnerValue } from '../utils/spinners.js';
-import { showModal, closeModal, toast, persistentError, escHtml, formatGrade } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  toast,
+  persistentError,
+  escHtml,
+  formatGrade,
+  onModalSync,
+  showReloadNotice,
+  changedByName,
+} from '../app.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCREEN: Scores invoeren
@@ -37,6 +47,30 @@ let undoBtnEl = null;
 let redoBtnEl = null;
 const MAX_HISTORY = 50;
 
+// ── Background changes (other teachers) ──────────────────────────────────────
+// One updater per group grid: (studentId, scoreRecord) => applies that record.
+let rowUpdaters = [];
+// Groups, students and observaties shown in the open modal; when a background
+// change alters this, the modal has to be reloaded.
+let activeRoster = null;
+// Cells with a save in flight ("studentId:col" -> count). Background updates
+// skip these, so a slightly older file on disk never overwrites fresh input.
+const pendingSaves = new Map();
+const REMOTE_FLASH_MS = 2000;
+const REMOTE_FLASH_COLOR = '#f5a623';
+
+async function waitForPendingSaves(timeoutMs = 5000) {
+  const end = Date.now() + timeoutMs;
+  while (pendingSaves.size > 0 && Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+function changedInBackground(action) {
+  toast(`Niet ${action}: deze score is intussen door een collega gewijzigd.`, 'info');
+  return false;
+}
+
 function updateUndoRedoBtns() {
   if (undoBtnEl) undoBtnEl.disabled = scoreHistory.length === 0;
   if (redoBtnEl) redoBtnEl.disabled = redoHistory.length === 0;
@@ -53,7 +87,9 @@ async function undoLast() {
   if (scoreHistory.length === 0) return;
   const entry = scoreHistory.pop();
   redoHistory.push(entry);
-  await entry.undo();
+  // An entry returns false when the cell was changed by someone else since;
+  // it is then dropped instead of overwriting their value.
+  if ((await entry.undo()) === false) redoHistory.pop();
   updateUndoRedoBtns();
 }
 
@@ -61,7 +97,7 @@ async function redoLast() {
   if (redoHistory.length === 0) return;
   const entry = redoHistory.pop();
   scoreHistory.push(entry);
-  await entry.redo();
+  if ((await entry.redo()) === false) scoreHistory.pop();
   updateUndoRedoBtns();
 }
 
@@ -72,6 +108,8 @@ export function destroyHotInstances() {
     } catch (_) {}
   });
   hotInstances = [];
+  rowUpdaters = [];
+  activeRoster = null;
   activeGridData = [];
   activeExam = null;
   activeObs = [];
@@ -131,16 +169,7 @@ export async function openScoreModal(examId, year, deps) {
         if (isNaN(val) || !activeExam) return;
         activeExam.n_term = val;
         await Store.setExamNTerm(activeExam.id, val, year);
-        activeGridData.forEach((gd) => {
-          const ai = gd.findIndex((r) => r[0] === '__avg__');
-          const si2 = gd.findIndex((r) => r[0] === '__std__');
-          const _O = activeObs ? activeObs.length : 0;
-          gd.forEach((_, ri) => {
-            if (ri < ai) recomputeRow(gd, activeExam, ri, _O);
-          });
-          recomputeSummaryRow(gd, ai, si2, activeExam, _O);
-        });
-        hotInstances.forEach((h) => h.render());
+        recomputeAllRows();
       };
       ntermSp
         .querySelectorAll('.spin-btn')
@@ -172,6 +201,52 @@ export async function openScoreModal(examId, year, deps) {
         });
       });
 
+      // ── Changes made by other teachers while this modal is open ────────────
+      onModalSync('scores', (ev) => {
+        if (ev.year !== year || ev.subject !== Store.getActiveSubject()) return;
+        if (ev.after === null && ev.kind !== 'deleted') return; // not loaded here
+        rowUpdaters.forEach((apply) => apply(ev.id, ev.after));
+      });
+
+      // An N-term change by someone else is applied in place. Other exam edits
+      // need a reload of this modal (Phase 4).
+      onModalSync('exam', (ev) => {
+        if (ev.id !== examId || ev.year !== year || !activeExam || !ev.after) return;
+        if (!onlyNTermDiffers(activeExam, ev.after)) return;
+        const input = ntermSp.querySelector('.spin-val');
+        if (document.activeElement === input) return; // the user's own input wins
+        const val = ev.after.n_term ?? 1;
+        if (val === activeExam.n_term) return;
+        activeExam.n_term = val;
+        ntermSp.dataset.val = val;
+        input.value = String(val).replace('.', ',');
+        recomputeAllRows();
+        input.style.transition = 'none';
+        input.style.background = REMOTE_FLASH_COLOR;
+        setTimeout(() => {
+          input.style.transition = 'background 0.6s';
+          input.style.background = '';
+        }, REMOTE_FLASH_MS);
+      });
+
+      // Groups, students or observaties shown in this modal changed: reload it.
+      const NOTICE_SUBJECT = {
+        group: 'Groepsgegevens',
+        students: 'Leerlinggegevens',
+        observatie: 'Observaties',
+      };
+      for (const type of Object.keys(NOTICE_SUBJECT)) {
+        onModalSync(type, async (ev) => {
+          if (ev.year && ev.year !== year) return;
+          if (!activeExam || rosterSignature(activeExam, year) === activeRoster) return;
+          const who = await changedByName(ev);
+          showReloadNotice(
+            `${NOTICE_SUBJECT[type]} zijn gewijzigd door ${who}. Het scorescherm wordt opnieuw geladen.`,
+            () => reloadScoreModal(examId, year, deps)
+          );
+        });
+      }
+
       await loadScoreGrid(
         String(exam.jaarlaag),
         examId,
@@ -182,6 +257,84 @@ export async function openScoreModal(examId, year, deps) {
     'modal-scores',
     deps?.renderToetsenList
   );
+}
+
+// Recalculate totals, grades and summary rows of every group (e.g. after an N-term change).
+function recomputeAllRows() {
+  activeGridData.forEach((gd) => {
+    const ai = gd.findIndex((r) => r[0] === '__avg__');
+    const si2 = gd.findIndex((r) => r[0] === '__std__');
+    const _O = activeObs ? activeObs.length : 0;
+    gd.forEach((_, ri) => {
+      if (ri < ai) recomputeRow(gd, activeExam, ri, _O);
+    });
+    recomputeSummaryRow(gd, ai, si2, activeExam, _O);
+  });
+  hotInstances.forEach((h) => h.render());
+}
+
+// JSON with sorted keys, so two versions of an object compare regardless of key order.
+function stableStringify(v) {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(v[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
+}
+
+// True when two versions of an exam differ only in their N-term (and version info).
+function onlyNTermDiffers(a, b) {
+  const strip = ({ n_term: _n, _meta: _m, ...rest }) => rest;
+  return stableStringify(strip(a)) === stableStringify(strip(b));
+}
+
+// Groups (in display order) whose students take this exam.
+function examGroups(exam, year, jaarlaag = exam.jaarlaag) {
+  const examSchoolsoort = exam.schoolsoort ?? [];
+  return Store.getGroupsSync(year)
+    .filter((g) => {
+      if (String(g.jaarlaag) !== String(jaarlaag)) return false;
+      if (examSchoolsoort.length === 0) return true;
+      return (g.schoolsoort ?? []).some((ss) => examSchoolsoort.includes(ss));
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function groupStudentsOf(group, allStudents) {
+  return allStudents
+    .filter((s) => group.student_ids.includes(s.id))
+    .sort((a, b) => (a.achternaam ?? '').localeCompare(b.achternaam ?? ''));
+}
+
+// Everything about the modal's layout that comes from groups, students and observaties.
+function rosterSignature(exam, year) {
+  const allStudents = Store.getStudentsSync(year);
+  const allObs = Store.getObservatiesSync();
+  return stableStringify({
+    groups: examGroups(exam, year).map((g) => [
+      g.id,
+      g.name,
+      groupStudentsOf(g, allStudents).map((s) => [s.id, Store.fullName(s)]),
+    ]),
+    obs: (exam.obs_ids ?? []).map((id) => {
+      const o = allObs.find((x) => x.id === id);
+      return o ? [o.id, o.naam, o.icon] : null;
+    }),
+  });
+}
+
+// Close and reopen the score modal after committing any open cell editor.
+async function reloadScoreModal(examId, year, deps) {
+  hotInstances.forEach((h) => {
+    const editor = h.getActiveEditor();
+    if (editor?.isOpened?.()) editor.finishEditing();
+  });
+  await waitForPendingSaves();
+  closeModal();
+  if (Store.getExamsSync(year).some((e) => e.id === examId)) openScoreModal(examId, year, deps);
 }
 
 export async function loadScoreGrid(jaarlaag, examId, container, year) {
@@ -196,15 +349,9 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
   const exam = Store.getExamsSync(year).find((e) => e.id === examId);
   if (!exam) return;
   activeExam = { ...exam };
+  activeRoster = rosterSignature(exam, year);
 
-  const examSchoolsoort = exam.schoolsoort ?? [];
-  const groups = Store.getGroupsSync(year)
-    .filter((g) => {
-      if (String(g.jaarlaag) !== String(jaarlaag)) return false;
-      if (examSchoolsoort.length === 0) return true;
-      return (g.schoolsoort ?? []).some((ss) => examSchoolsoort.includes(ss));
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const groups = examGroups(exam, year, jaarlaag);
   const allStudents = Store.getStudentsSync(year);
 
   if (groups.length === 0) {
@@ -216,9 +363,7 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
 
   for (let gi = 0; gi < groups.length; gi++) {
     const group = groups[gi];
-    const groupStudents = allStudents
-      .filter((s) => group.student_ids.includes(s.id))
-      .sort((a, b) => (a.achternaam ?? '').localeCompare(b.achternaam ?? ''));
+    const groupStudents = groupStudentsOf(group, allStudents);
     if (groupStudents.length === 0) continue;
 
     const section = document.createElement('div');
@@ -405,6 +550,20 @@ export function recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O = 0) {
   sdRow[N + 4 + TOFF] = sdGrade !== null ? sdGrade.toFixed(1).replace('.', ',') : '';
 }
 
+/**
+ * How typed input is shown in the grid (`cell`) and stored (`value`):
+ * empty → removed, N → null (not evaluated), valid number → number,
+ * anything else → kept as typed so it can be corrected.
+ */
+function normalizeScore(input, q) {
+  const raw = String(input ?? '').trim();
+  if (raw === '') return { cell: '', value: undefined };
+  if (raw.toUpperCase() === 'N') return { cell: 'N', value: null };
+  const num = Number(raw);
+  if (isNaN(num) || num < 0 || num > q.max_points) return { cell: raw, value: raw };
+  return { cell: String(num), value: num };
+}
+
 export function createGroupHOT(container, exam, students, gridData, year, obsArr = []) {
   const N = exam.questions.length;
   const summaryIdx = gridData.findIndex((r) => r[0] === '__avg__');
@@ -446,6 +605,57 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
 
   // ── Selected cell tracking (per HOT instance) ─────────────────────────────
   let selectedCell = { row: -1, col: -1 };
+
+  // ── Saving & background changes ───────────────────────────────────────────
+  // Every save goes through saveCell, so background updates can leave cells
+  // with a save in flight alone (see pendingSaves).
+  async function saveCell(row, col, write) {
+    const key = `${students[row].id}:${col}`;
+    pendingSaves.set(key, (pendingSaves.get(key) ?? 0) + 1);
+    try {
+      await write();
+    } finally {
+      const n = pendingSaves.get(key) - 1;
+      if (n > 0) pendingSaves.set(key, n);
+      else pendingSaves.delete(key);
+    }
+  }
+
+  // Cells recently changed by someone else ("row:col" -> time the flash ends).
+  const flashUntil = new Map();
+
+  // Apply a score file saved by another teacher to this student's row.
+  function applyRemoteRecord(studentId, rec) {
+    const row = students.findIndex((st) => String(st.id) === String(studentId));
+    if (row < 0 || hot.isDestroyed) return;
+    const examScores = rec?.scores?.[exam.id] ?? {};
+    const obsIds = rec?.observations?.[exam.id] ?? [];
+    const editor = hot.getActiveEditor();
+    const editing = editor?.isOpened?.() ? { row: editor.row, col: editor.col } : null;
+    let changed = false;
+    const setCell = (col, value) => {
+      if (gridData[row][col] === value) return;
+      if (editing && editing.row === row && editing.col === col) return;
+      if (pendingSaves.has(`${students[row].id}:${col}`)) return;
+      gridData[row][col] = value;
+      flashUntil.set(`${row}:${col}`, Date.now() + REMOTE_FLASH_MS);
+      changed = true;
+    };
+    exam.questions.forEach((q, qi) => {
+      const v = examScores[q.id];
+      setCell(2 + qi, v === undefined ? '' : v === null ? 'N' : String(v));
+    });
+    obsArr.forEach((o, oi) => setCell(obsStart + oi, obsIds.includes(o.id)));
+    if (!changed) return;
+    rowStatus[row] = computeRowStatus(row);
+    recomputeRow(gridData, exam, row, O);
+    recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O);
+    hot.render();
+    setTimeout(() => {
+      if (!hot.isDestroyed) hot.render();
+    }, REMOTE_FLASH_MS + 50);
+  }
+  rowUpdaters.push(applyRemoteRecord);
 
   // Question headers: RTTI (top) → pts → section → number (bottom)
   const qHeaders = exam.questions.map((q) => {
@@ -523,6 +733,10 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
   // ── Highlight helper ──────────────────────────────────────────────────────
 
   function applyHighlight(TD, row, col) {
+    const flashEnd = flashUntil.get(`${row}:${col}`);
+    const flashing = flashEnd !== undefined && flashEnd > Date.now();
+    if (flashEnd !== undefined && !flashing) flashUntil.delete(`${row}:${col}`);
+    TD.style.boxShadow = flashing ? `inset 0 0 0 2px ${REMOTE_FLASH_COLOR}` : '';
     const onRow = row === selectedCell.row;
     const onCol = col === selectedCell.col;
     if (!onRow && !onCol) return;
@@ -703,19 +917,27 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
 
       pushHistory({
         undo: async () => {
+          if (gridData[row][col] !== newChecked) return changedInBackground('ongedaan gemaakt');
           gridData[row][col] = prevVal;
-          await Store.setObservation(student.id, exam.id, obs.id, prevVal, year);
+          await saveCell(row, col, () =>
+            Store.setObservation(student.id, exam.id, obs.id, prevVal, year)
+          );
           hotInstances.forEach((h) => h.render());
         },
         redo: async () => {
+          if (gridData[row][col] !== prevVal) return changedInBackground('opnieuw uitgevoerd');
           gridData[row][col] = newChecked;
-          await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+          await saveCell(row, col, () =>
+            Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
+          );
           hotInstances.forEach((h) => h.render());
         },
       });
 
       hot.selectCell(row, col); // triggers afterSelection → render
-      await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+      await saveCell(row, col, () =>
+        Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
+      );
     });
     cb.addEventListener('change', async () => {
       // Handles the case where the cell was already selected (native toggle path).
@@ -729,17 +951,25 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       gridData[row][col] = newChecked;
       pushHistory({
         undo: async () => {
+          if (gridData[row][col] !== newChecked) return changedInBackground('ongedaan gemaakt');
           gridData[row][col] = prevVal;
-          await Store.setObservation(student.id, exam.id, obs.id, prevVal, year);
+          await saveCell(row, col, () =>
+            Store.setObservation(student.id, exam.id, obs.id, prevVal, year)
+          );
           hotInstances.forEach((h) => h.render());
         },
         redo: async () => {
+          if (gridData[row][col] !== prevVal) return changedInBackground('opnieuw uitgevoerd');
           gridData[row][col] = newChecked;
-          await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+          await saveCell(row, col, () =>
+            Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
+          );
           hotInstances.forEach((h) => h.render());
         },
       });
-      await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+      await saveCell(row, col, () =>
+        Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
+      );
     });
     TD.appendChild(cb);
     applyHighlight(TD, row, col);
@@ -862,47 +1092,50 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
           const upper = raw.toUpperCase();
           const prevRaw = oldVal;
 
-          // Snapshot for undo/redo
+          // Snapshot for undo/redo. Undo/redo only apply while the cell still
+          // holds the value this entry left behind (a colleague may have changed it).
           const applyScore = async (str) => {
-            const s = String(str ?? '')
-              .toUpperCase()
-              .trim();
-            gridData[row][col] = str ?? '';
+            const { cell, value } = normalizeScore(str, q);
+            gridData[row][col] = cell;
             rowStatus[row] = computeRowStatus(row);
-            if (!str || str === '') {
-              await Store.setScore(student.id, exam.id, q.id, undefined, year);
-            } else if (s === 'N') {
-              await Store.setScore(student.id, exam.id, q.id, null, year);
-            } else {
-              const n = Number(str);
-              await Store.setScore(student.id, exam.id, q.id, isNaN(n) ? str : n, year);
-            }
+            await saveCell(row, col, () => Store.setScore(student.id, exam.id, q.id, value, year));
             recomputeRow(gridData, exam, row, activeObs.length);
             recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, activeObs.length);
             hotInstances.forEach((h) => h.render());
           };
-          pushHistory({
-            undo: () => applyScore(prevRaw),
-            redo: () => applyScore(newVal),
-          });
+          const entry = {
+            before: normalizeScore(prevRaw, q).cell,
+            after: normalizeScore(newVal, q).cell,
+            undo: () =>
+              gridData[row][col] === entry.after
+                ? applyScore(prevRaw)
+                : changedInBackground('ongedaan gemaakt'),
+            redo: () =>
+              gridData[row][col] === entry.before
+                ? applyScore(newVal)
+                : changedInBackground('opnieuw uitgevoerd'),
+          };
+          pushHistory(entry);
 
           if (raw === '') {
             gridData[row][col] = '';
-            await Store.setScore(student.id, exam.id, q.id, undefined, year);
+            await saveCell(row, col, () =>
+              Store.setScore(student.id, exam.id, q.id, undefined, year)
+            );
           } else if (upper === 'N') {
             gridData[row][col] = 'N';
-            await Store.setScore(student.id, exam.id, q.id, null, year);
+            await saveCell(row, col, () => Store.setScore(student.id, exam.id, q.id, null, year));
           } else {
             const num = Number(raw);
             if (isNaN(num) || num < 0 || num > q.max_points) {
               gridData[row][col] = raw;
-              await Store.setScore(student.id, exam.id, q.id, raw, year);
+              await saveCell(row, col, () => Store.setScore(student.id, exam.id, q.id, raw, year));
               persistentError(
                 `Ongeldige score "${raw}" voor vraag ${q.section}${q.number} (max ${q.max_points}). Controleer en herstel.`
               );
             } else {
               gridData[row][col] = String(num);
-              await Store.setScore(student.id, exam.id, q.id, num, year);
+              await saveCell(row, col, () => Store.setScore(student.id, exam.id, q.id, num, year));
             }
           }
           rowStatus[row] = computeRowStatus(row);
@@ -1040,19 +1273,29 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
           gridData[row][col] = newChecked;
           pushHistory({
             undo: async () => {
+              if (gridData[row][col] !== newChecked) {
+                return changedInBackground('ongedaan gemaakt');
+              }
               gridData[row][col] = prevVal;
-              await Store.setObservation(student.id, exam.id, obs.id, prevVal, year);
+              await saveCell(row, col, () =>
+                Store.setObservation(student.id, exam.id, obs.id, prevVal, year)
+              );
               hotInstances.forEach((h) => h.render());
             },
             redo: async () => {
+              if (gridData[row][col] !== prevVal) {
+                return changedInBackground('opnieuw uitgevoerd');
+              }
               gridData[row][col] = newChecked;
-              await Store.setObservation(student.id, exam.id, obs.id, newChecked, year);
+              await saveCell(row, col, () =>
+                Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
+              );
               hotInstances.forEach((h) => h.render());
             },
           });
-          Store.setObservation(student.id, exam.id, obs.id, newChecked, year).then(() =>
-            hot.render()
-          );
+          saveCell(row, col, () =>
+            Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
+          ).then(() => hot.render());
         }
         // Advance: next obs → next obs, last obs + not last student → next row first Q,
         // last obs + last student → stay (nothing to advance to)

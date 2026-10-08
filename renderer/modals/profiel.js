@@ -1,8 +1,47 @@
 // ── Student profile modal ─────────────────────────────────────────────────
-import { showModal, escHtml, formatGrade, pushModalChart } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  escHtml,
+  formatGrade,
+  pushModalChart,
+  onModalSync,
+  showReloadNotice,
+  modalRefresher,
+} from '../app.js';
 import { examTypeColor } from '../utils/colors.js';
 import { computeExamStats } from '../screens/toetsen.js';
 import { leerlingenState } from '../screens/leerlingen.js';
+
+/**
+ * Keep an open profile up to date: new scores and exam edits refresh it
+ * silently (on the same tab); a change to the student's own record needs a notice.
+ */
+function watchProfile(el, { studentId, year, backFn, peers, activeTab }) {
+  const currentTab = () => el.querySelector('.overview-tab.selected')?.dataset.tab ?? activeTab;
+  const reopen = () => openProfielModal(studentId, backFn, peers, currentTab());
+  const refresh = modalRefresher(reopen);
+  onModalSync('scores', (ev) => {
+    if (ev.id === String(studentId) && ev.subject === Store.getActiveSubject()) refresh();
+  });
+  onModalSync('exam', (ev) => {
+    if (ev.subject === Store.getActiveSubject()) refresh();
+  });
+  onModalSync('students', (ev) => {
+    if (ev.year !== year) return;
+    const find = (list) => JSON.stringify((list ?? []).find((s) => s.id === studentId) ?? null);
+    const after = find(ev.after);
+    if (find(ev.before) === after) return;
+    if (after === 'null') {
+      showReloadNotice('Deze leerling is verwijderd door een collega.', closeModal);
+    } else {
+      showReloadNotice(
+        'De gegevens van deze leerling zijn gewijzigd door een collega. Het venster wordt opnieuw geladen.',
+        reopen
+      );
+    }
+  });
+}
 
 export async function openProfielModal(
   studentId,
@@ -22,7 +61,8 @@ export async function openProfielModal(
   if (history.length === 0) {
     showModal(
       `<h3>${escHtml(Store.fullName(student))}</h3><p class="hint">Nog geen scores voor deze leerling.</p>`,
-      () => {
+      (el) => {
+        watchProfile(el, { studentId, year, backFn, peers, activeTab });
         if (backFn)
           document.getElementById('modal-close').addEventListener('click', backFn, { once: true });
       }
@@ -163,6 +203,7 @@ export async function openProfielModal(
     </div>
     `,
     (el) => {
+      watchProfile(el, { studentId, year, backFn, peers, activeTab });
       if (backFn)
         document.getElementById('modal-close').addEventListener('click', backFn, { once: true });
 

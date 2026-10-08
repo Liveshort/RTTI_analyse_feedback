@@ -1,5 +1,15 @@
 // ── Group add/edit & CSV import modals ────────────────────────────────────────
-import { showModal, closeModal, toast, escHtml, SEL, overlayElement } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  toast,
+  escHtml,
+  SEL,
+  overlayElement,
+  onModalSync,
+  showReloadNotice,
+  changedByName,
+} from '../app.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
 import { renderGroepen } from '../screens/groepen.js';
 
@@ -197,6 +207,25 @@ export async function openGroupModal(id) {
     </div>
   `,
     (el) => {
+      // Someone else changed or removed this group while it is being edited.
+      if (id) {
+        onModalSync('group', async (ev) => {
+          if (ev.id !== id || ev.year !== year) return;
+          const who = await changedByName(ev);
+          if (!ev.after) {
+            showReloadNotice(`Deze groep is verwijderd door ${who}.`, () => {
+              closeModal();
+              renderGroepen();
+            });
+          } else {
+            showReloadNotice(
+              `Deze groep is gewijzigd door ${who}. Het venster wordt opnieuw geladen.`,
+              () => openGroupModal(id)
+            );
+          }
+        });
+      }
+
       // Helper to refresh docent section
       const updateDocentSection = () => {
         const selectedSS = [...el.querySelectorAll('.ss-toggle.selected')].map((b) => b.dataset.ss);
