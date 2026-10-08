@@ -68,4 +68,10 @@ contextBridge.exposeInMainWorld('rtti', {
   // Returns { success, pdfPath } or { success: false, error }.
   renderAssignmentPdf: (typFile, title, obsIcon, obsName) =>
     ipcRenderer.invoke('app:renderAssignmentPdf', typFile, title, obsIcon, obsName),
+
+  // Compile the editor's current text to SVG pages for the live preview.
+  // previewContent may contain a <__rtti_cursor> marker; the saved file is untouched.
+  // Returns { success, pages: [svgString, ...] } or { success: false, error }.
+  renderAssignmentSvg: (typFile, title, obsIcon, obsName, previewContent) =>
+    ipcRenderer.invoke('app:renderAssignmentSvg', typFile, title, obsIcon, obsName, previewContent),
 });

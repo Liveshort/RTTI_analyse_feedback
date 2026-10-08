@@ -278,32 +278,296 @@ function setStatus(msg, errorText = null) {
   }
 }
 
-function refreshPdf(pdfAbsPath) {
-  const fileUrl = 'file:///' + pdfAbsPath.replace(/\\/g, '/');
-  const viewerSrc = `pdf-viewer.html?file=${encodeURIComponent(fileUrl + '?t=' + Date.now())}`;
-  const frame = document.getElementById('pdf-frame');
-  const placeholder = document.getElementById('pdf-placeholder');
-  frame.src = viewerSrc;
-  frame.style.display = '';
-  placeholder.style.display = 'none';
+// ── Cursor marker ─────────────────────────────────────────────────────────────
+// The preview is compiled from a copy of the document with an invisible
+// `#metadata(none)<__rtti_cursor>` inserted near the cursor. The wrapper (main.js)
+// draws an <a href="rtti-cursor:"> at that spot in the SVG, which we scroll to.
+
+const CURSOR_MARKER = '#metadata(none)<__rtti_cursor>';
+
+// Insert the marker at pos. On a blank line the marker gets its own line, so the
+// blank line stays blank and the paragraphs around it are not joined into one.
+function insertCursorMarker(doc, pos) {
+  const lineStart = doc.lastIndexOf('\n', pos - 1) + 1;
+  let lineEnd = doc.indexOf('\n', pos);
+  if (lineEnd === -1) lineEnd = doc.length;
+  const blankLine = doc.slice(lineStart, lineEnd).trim() === '';
+  const marker = blankLine ? `\n${CURSOR_MARKER}\n` : CURSOR_MARKER;
+  return doc.slice(0, pos) + marker + doc.slice(pos);
 }
 
-async function doCompileOnly() {
-  if (!dataDir || !typFile) return;
-  setStatus('Bezig met renderen…');
-  const result = await postToParent('rtti-render-assignment', {
+// Characters the marker must not be placed directly before: list/heading/term
+// markers at line start, and labels (which would attach to the marker instead).
+const MARKER_BLOCKED_NEXT = new Set(['-', '+', '=', '/', '<']);
+
+const isIdentChar = (c) => /[\p{L}\p{N}_-]/u.test(c);
+
+// Embedded statements that continue in code mode until the end of the line.
+const LINE_KEYWORDS = new Set(['let', 'set', 'show', 'import', 'include', 'if', 'for', 'while']);
+
+/**
+ * Find the last offset ≤ head where the marker can be inserted without breaking
+ * the Typst syntax: inside a content block `[…]` (markup mode), right after
+ * whitespace or the opening `[`, and outside comments, strings, raw and math.
+ * Returns null when no such position exists (e.g. cursor at module top level).
+ */
+function cursorMarkerPos(doc, head) {
+  const stack = []; // 'm' = markup ([…]), 'c' = code ((…) / {…})
+  let lastSafe = null;
+  let afterOpen = false; // just pushed a '[' at the previous index
+  let i = 0;
+
+  // Skip from i (on the opening char) past the closing delimiter; returns new i.
+  const skipUntil = (start, close) => {
+    const end = doc.indexOf(close, start);
+    return end === -1 ? doc.length : end + close.length;
+  };
+
+  while (i <= head) {
+    const mode = stack[stack.length - 1];
+    const c = doc[i];
+
+    if (mode === 'm') {
+      const prev = doc[i - 1];
+      if (
+        (afterOpen || prev === ' ' || prev === '\t' || prev === '\n') &&
+        !MARKER_BLOCKED_NEXT.has(c)
+      ) {
+        lastSafe = i;
+      }
+    }
+    afterOpen = false;
+    if (i === head) break;
+
+    // Comments (both modes). In markup, `://` is part of a URL, not a comment.
+    if (c === '/' && doc[i + 1] === '/' && !(mode === 'm' && doc[i - 1] === ':')) {
+      // Stop on the newline itself so it is still seen as whitespace / line end.
+      const nl = doc.indexOf('\n', i);
+      i = nl === -1 ? doc.length : nl;
+      continue;
+    }
+    if (c === '/' && doc[i + 1] === '*') {
+      i = skipUntil(i + 2, '*/');
+      continue;
+    }
+    // Raw text: a run of backticks closes with an equal run.
+    if (c === '`') {
+      let n = 0;
+      while (doc[i + n] === '`') n++;
+      i = skipUntil(i + n, '`'.repeat(n));
+      continue;
+    }
+    // Math: skip to the closing unescaped $.
+    if (c === '$') {
+      let j = i + 1;
+      while (j < doc.length && doc[j] !== '$') j += doc[j] === '\\' ? 2 : 1;
+      i = j + 1;
+      continue;
+    }
+
+    if (mode === 'm') {
+      if (c === '\\') {
+        i += 2;
+        continue;
+      }
+      if (c === '#') {
+        // Embedded code: #ident(.ident)* optionally followed by ( or {, or #( / #{.
+        let j = i + 1;
+        while (j < doc.length && (isIdentChar(doc[j]) || doc[j] === '.')) j++;
+        if (LINE_KEYWORDS.has(doc.slice(i + 1, j))) {
+          // Statement like `#let x = …` / `#show …`: code until the end of the line.
+          stack.push('l');
+          i = j;
+        } else if (doc[j] === '(' || doc[j] === '{') {
+          stack.push('c');
+          i = j + 1;
+        } else {
+          i = j; // a following '[' is handled as a content block below
+        }
+        continue;
+      }
+      if (c === '[') {
+        stack.push('m');
+        afterOpen = true;
+      } else if (c === ']') {
+        stack.pop();
+      }
+      i++;
+      continue;
+    }
+
+    // Code mode (also module top level, where stack is empty).
+    if (mode === 'l' && c === '\n') {
+      stack.pop();
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      let j = i + 1;
+      while (j < doc.length && doc[j] !== '"') j += doc[j] === '\\' ? 2 : 1;
+      i = j + 1;
+      continue;
+    }
+    if (c === '[') {
+      stack.push('m');
+      afterOpen = true;
+    } else if (c === '(' || c === '{') {
+      stack.push('c');
+    } else if (c === ')' || c === '}' || c === ']') {
+      stack.pop();
+    }
+    i++;
+  }
+
+  return lastSafe;
+}
+
+// ── SVG preview ───────────────────────────────────────────────────────────────
+
+const svgViewer = document.getElementById('svg-viewer');
+const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const PT_TO_PX = 96 / 72;
+let zoomMode = 'fit'; // 'fit' (page width) or 'fixed'
+let zoomScale = 1;
+
+let rendering = false;
+let renderPending = false;
+let lastMarkerPos = null;
+let cursorTimer = null;
+
+function pageWidthPx(pageEl) {
+  const vb = pageEl.querySelector('svg')?.viewBox?.baseVal;
+  return (vb?.width || 595.28) * PT_TO_PX;
+}
+
+function applyZoom() {
+  const pages = [...svgViewer.querySelectorAll('.svg-page')];
+  if (pages.length === 0) return;
+  if (zoomMode === 'fit') {
+    zoomScale = Math.max(0.1, (svgViewer.clientWidth - 32) / pageWidthPx(pages[0]));
+  }
+  for (const page of pages) page.style.width = `${pageWidthPx(page) * zoomScale}px`;
+  document.getElementById('pv-zoom-label').textContent = `${Math.round(zoomScale * 100)}%`;
+}
+
+function zoomStep(dir) {
+  zoomScale =
+    dir > 0
+      ? (ZOOM_STEPS.find((s) => s > zoomScale + 0.01) ?? ZOOM_STEPS.at(-1))
+      : ([...ZOOM_STEPS].reverse().find((s) => s < zoomScale - 0.01) ?? ZOOM_STEPS[0]);
+  zoomMode = 'fixed';
+  applyZoom();
+}
+
+document.getElementById('pv-zoom-in').addEventListener('click', () => zoomStep(1));
+document.getElementById('pv-zoom-out').addEventListener('click', () => zoomStep(-1));
+document.getElementById('pv-fit-width').addEventListener('click', () => {
+  zoomMode = 'fit';
+  applyZoom();
+});
+new ResizeObserver(() => {
+  if (zoomMode === 'fit') applyZoom();
+}).observe(svgViewer);
+
+// Ctrl+scroll: accumulate deltaY so a trackpad gesture counts as one step.
+let wheelAccum = 0;
+svgViewer.addEventListener(
+  'wheel',
+  (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    wheelAccum += e.deltaY;
+    if (Math.abs(wheelAccum) > 50) {
+      zoomStep(wheelAccum < 0 ? 1 : -1);
+      wheelAccum = 0;
+    }
+  },
+  { passive: false }
+);
+
+// Links inside the rendered document (e.g. @references) must not navigate the frame.
+svgViewer.addEventListener('click', (e) => {
+  if (e.target.closest('a')) e.preventDefault();
+});
+
+// Replace page contents in place so the viewer keeps its scroll position.
+function showPages(pages) {
+  const existing = [...svgViewer.querySelectorAll('.svg-page')];
+  pages.forEach((svg, idx) => {
+    let pageEl = existing[idx];
+    if (!pageEl) {
+      pageEl = document.createElement('div');
+      pageEl.className = 'svg-page';
+      svgViewer.appendChild(pageEl);
+    }
+    pageEl.innerHTML = svg;
+  });
+  for (const extra of existing.slice(pages.length)) extra.remove();
+
+  document.getElementById('pdf-placeholder').style.display = 'none';
+  svgViewer.style.display = '';
+  applyZoom();
+}
+
+// Scroll the cursor marker into view (about 1/3 from the top) if it is out of view.
+function scrollToCursorMarker() {
+  const marker = svgViewer.querySelector('a[href="rtti-cursor:"]');
+  if (!marker) return;
+  const m = marker.getBoundingClientRect();
+  const v = svgViewer.getBoundingClientRect();
+  if (m.top >= v.top && m.bottom <= v.bottom) return;
+  svgViewer.scrollTop += m.top - v.top - svgViewer.clientHeight / 3;
+}
+
+function compileSvg(content) {
+  return postToParent('rtti-render-assignment-svg', {
     typFile,
     title: naam,
     obsIcon,
     obsName,
+    content,
   });
-  if (result?.success) {
-    refreshPdf(result.pdfPath);
-    setStatus('');
-  } else {
-    setStatus('Fout bij renderen', result?.error ?? 'Onbekende fout');
+}
+
+// Compile the current editor text (with cursor marker) and show the result.
+// Only one compile runs at a time; requests during a compile coalesce into one rerun.
+async function renderPreview() {
+  if (!view || !typFile) return;
+  if (rendering) {
+    renderPending = true;
+    return;
+  }
+  rendering = true;
+
+  try {
+    const doc = view.state.doc.toString();
+    const markerPos = cursorMarkerPos(doc, view.state.selection.main.head);
+    lastMarkerPos = markerPos;
+
+    let result;
+    if (markerPos !== null) {
+      result = await compileSvg(insertCursorMarker(doc, markerPos));
+    }
+    // Retry without marker if there is none, or if the marker may have broken the build.
+    if (!result?.success) result = await compileSvg(doc);
+
+    if (result?.success) {
+      showPages(result.pages);
+      scrollToCursorMarker();
+      if (document.getElementById('btn-render-error')) setStatus('');
+    } else {
+      setStatus('Fout bij renderen', result?.error ?? 'Onbekende fout');
+    }
+  } finally {
+    rendering = false;
+    if (renderPending) {
+      renderPending = false;
+      renderPreview();
+    }
   }
 }
+
+// ── Save ──────────────────────────────────────────────────────────────────────
 
 async function doSaveAndCompile() {
   if (!view || !dataDir || !typFile) return;
@@ -315,32 +579,31 @@ async function doSaveAndCompile() {
     setStatus('Fout bij opslaan');
     return;
   }
-
-  setStatus('Bezig met renderen…');
-  const result = await postToParent('rtti-render-assignment', {
-    typFile,
-    title: naam,
-    obsIcon,
-    obsName,
-  });
-
-  if (result?.success) {
-    refreshPdf(result.pdfPath);
-    setStatus('Opgeslagen');
-  } else {
-    setStatus('Fout bij renderen', result?.error ?? 'Onbekende fout');
-  }
+  setStatus('Opgeslagen');
+  await renderPreview();
 }
 
 function scheduleCompile() {
   clearTimeout(saveTimer);
+  clearTimeout(cursorTimer);
   saveTimer = setTimeout(doSaveAndCompile, 600);
+}
+
+// Cursor moved without editing: re-render only if the marker would move.
+function scheduleCursorRender() {
+  clearTimeout(cursorTimer);
+  cursorTimer = setTimeout(() => {
+    const pos = cursorMarkerPos(view.state.doc.toString(), view.state.selection.main.head);
+    if (pos !== lastMarkerPos) renderPreview();
+  }, 400);
 }
 
 const changeListener = EditorView.updateListener.of((update) => {
   if (update.docChanged) {
     setStatus('Niet opgeslagen…');
     scheduleCompile();
+  } else if (update.selectionSet) {
+    scheduleCursorRender();
   }
 });
 
@@ -375,7 +638,7 @@ async function init() {
     parent: document.getElementById('cm-container'),
   });
 
-  await doCompileOnly();
+  await renderPreview();
 }
 
 init();

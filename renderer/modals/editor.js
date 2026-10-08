@@ -80,6 +80,11 @@ function handleEditorMessage(evt, frame) {
         .renderAssignmentPdf(rest.typFile, rest.title, rest.obsIcon, rest.obsName)
         .then(reply);
       break;
+    case 'rtti-render-assignment-svg':
+      window.rtti
+        .renderAssignmentSvg(rest.typFile, rest.title, rest.obsIcon, rest.obsName, rest.content)
+        .then(reply);
+      break;
     case 'rtti-get-data-dir':
       window.rtti.getDataDir().then(reply);
       break;

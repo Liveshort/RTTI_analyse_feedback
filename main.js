@@ -346,26 +346,35 @@ ipcMain.handle('app:renderRapportPdf', (_event, _examId, students, examInfo) => 
   });
 });
 
-// Compile an opdracht .typ file to PDF.
-// typFile: filename only (e.g. 'opdracht-1.typ'), relative to data/opdrachten/
-// title: plain-text title rendered as a level-1 heading in the wrapper
-// Returns { success, pdfPath } or { success: false, error }.
-ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title, obsIcon, obsName) => {
-  const bin = getTypstBinary();
-  const appDir = getAppDir();
-  const tmpDir = path.join(appDir, 'temp');
-  fs.mkdirSync(tmpDir, { recursive: true });
+// Draws an invisible link at the position of the <__rtti_cursor> metadata marker
+// on each page, so the renderer can locate the editor cursor in the SVG output.
+const CURSOR_FOREGROUND =
+  `#set page(foreground: context {\n` +
+  `  for m in query(<__rtti_cursor>).filter(m => m.location().page() == here().page()) {\n` +
+  `    let p = m.location().position()\n` +
+  `    place(top + left, dx: p.x, dy: p.y, link("rtti-cursor:")[#box(width: 1pt, height: 1em)])\n` +
+  `  }\n` +
+  `})\n`;
 
+// Build the wrapper .typ that renders an opdracht.
+// importPath: absolute Typst path (resolved against --root appDir) of the opdracht file.
+function buildAssignmentWrapper(
+  importPath,
+  title,
+  obsIcon,
+  obsName,
+  { cursorMarker = false } = {}
+) {
   const esc = (s) => (s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const escTitle = esc(title);
   const escObsIcon = esc(obsIcon ?? '❌');
   const escObsName = esc(obsName ?? 'Geen observatie');
 
-  // Absolute Typst paths (resolved against --root appDir).
-  const wrapperContent =
+  return (
     `#import "/data/opdrachten/lib.typ": setup, opdracht_header\n` +
-    `#import "/data/opdrachten/${typFile}": setup_extra, render_uitleg, render_opgaven, render_antwoorden\n\n` +
+    `#import "${importPath}": setup_extra, render_uitleg, render_opgaven, render_antwoorden\n\n` +
     `#show: setup\n` +
+    (cursorMarker ? CURSOR_FOREGROUND : '') +
     `#setup_extra()\n\n` +
     `#opdracht_header(\n` +
     `  title: "${escTitle}",\n` +
@@ -382,7 +391,26 @@ ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title, obsIcon, obsN
     `== Opgaven\n` +
     `#render_opgaven()\n\n` +
     `== Antwoorden\n` +
-    `#render_antwoorden()\n`;
+    `#render_antwoorden()\n`
+  );
+}
+
+// Compile an opdracht .typ file to PDF.
+// typFile: filename only (e.g. 'opdracht-1.typ'), relative to data/opdrachten/
+// title: plain-text title rendered as a level-1 heading in the wrapper
+// Returns { success, pdfPath } or { success: false, error }.
+ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title, obsIcon, obsName) => {
+  const bin = getTypstBinary();
+  const appDir = getAppDir();
+  const tmpDir = path.join(appDir, 'temp');
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  const wrapperContent = buildAssignmentWrapper(
+    `/data/opdrachten/${typFile}`,
+    title,
+    obsIcon,
+    obsName
+  );
 
   const wrapperPath = path.join(tmpDir, '_assignment_run.typ');
   const outputPdf = path.join(tmpDir, 'assignment_preview.pdf');
@@ -398,6 +426,105 @@ ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title, obsIcon, obsN
     });
   });
 });
+
+// Compile an opdracht to SVG pages for the live editor preview.
+// previewContent: current editor text, possibly containing a <__rtti_cursor> marker.
+// It is written to a temporary sibling copy (_preview_<typFile>) so relative
+// imports and images keep resolving; the copy is deleted after compiling.
+// Returns { success, pages: [svgString, ...] } or { success: false, error }.
+const PREVIEW_PREFIX = '_preview_';
+let svgRenderSeq = 0;
+
+function tryUnlink(p) {
+  try {
+    fs.unlinkSync(p);
+  } catch (_) {}
+}
+
+ipcMain.handle(
+  'app:renderAssignmentSvg',
+  (_event, typFile, title, obsIcon, obsName, previewContent) => {
+    if (!typFile || path.basename(typFile) !== typFile) {
+      return { success: false, error: `Ongeldige bestandsnaam: ${typFile}` };
+    }
+
+    const bin = getTypstBinary();
+    const appDir = getAppDir();
+    const tmpDir = path.join(appDir, 'temp');
+    // The folder is kept (deleting it on OneDrive gives EPERM); every render
+    // uses its own file prefix, so leftovers can never show up as stale pages.
+    const svgDir = path.join(tmpDir, 'svg_preview');
+    fs.mkdirSync(svgDir, { recursive: true });
+    const runPrefix = `r${++svgRenderSeq}-`;
+    for (const f of fs.readdirSync(svgDir)) tryUnlink(path.join(svgDir, f));
+
+    const previewName = PREVIEW_PREFIX + typFile;
+    const previewPath = path.join(getDataDir(), 'opdrachten', previewName);
+    const wrapperPath = path.join(tmpDir, '_assignment_svg_run.typ');
+    try {
+      fs.writeFileSync(previewPath, previewContent ?? '', 'utf8');
+      const wrapperContent = buildAssignmentWrapper(
+        `/data/opdrachten/${previewName}`,
+        title,
+        obsIcon,
+        obsName,
+        { cursorMarker: true }
+      );
+      fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
+    } catch (e) {
+      tryUnlink(previewPath);
+      return { success: false, error: e.message };
+    }
+
+    const outputPattern = path.join(svgDir, `${runPrefix}p{p}.svg`);
+    const pageRe = new RegExp(`^${runPrefix}p(\\d+)\\.svg$`);
+
+    return new Promise((resolve) => {
+      execFile(
+        bin,
+        ['compile', '--root', appDir, wrapperPath, outputPattern],
+        { maxBuffer: 10 * 1024 * 1024 },
+        (err, _stdout, stderr) => {
+          tryUnlink(wrapperPath);
+          tryUnlink(previewPath);
+          if (err) {
+            // Show the real filename instead of the temporary preview copy.
+            const error = (stderr || err.message).split(previewName).join(typFile);
+            resolve({ success: false, error });
+            return;
+          }
+          try {
+            const files = fs
+              .readdirSync(svgDir)
+              .map((f) => pageRe.exec(f))
+              .filter(Boolean)
+              .sort((a, b) => Number(a[1]) - Number(b[1]))
+              .map((m) => path.join(svgDir, m[0]));
+            const pages = files.map((f) => fs.readFileSync(f, 'utf8'));
+            files.forEach(tryUnlink);
+            resolve({ success: true, pages });
+          } catch (e) {
+            resolve({ success: false, error: e.message });
+          }
+        }
+      );
+    });
+  }
+);
+
+// Remove preview copies left behind by a crash mid-compile.
+function cleanupStalePreviewFiles() {
+  const dir = path.join(getDataDir(), 'opdrachten');
+  if (!fs.existsSync(dir)) return;
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.startsWith(PREVIEW_PREFIX) || !f.endsWith('.typ')) continue;
+    const p = path.join(dir, f);
+    try {
+      if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+    } catch (_) {}
+  }
+}
 
 // Open a file with the system default application (e.g. PDF in Acrobat/Edge).
 ipcMain.handle('shell:openPath', (_event, absPath) => shell.openPath(absPath));
@@ -465,6 +592,7 @@ function seedInitialData() {
 
 app.whenReady().then(() => {
   seedInitialData();
+  cleanupStalePreviewFiles();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

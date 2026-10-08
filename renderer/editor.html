@@ -552,11 +552,64 @@
         flex-direction: column;
       }
 
-      #pdf-frame {
-        width: 100%;
-        height: 100%;
-        border: none;
+      #preview-bar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 10px;
+        background: #3c3f41;
+        flex-shrink: 0;
+      }
+
+      .pv-btn {
+        height: 24px;
+        min-width: 24px;
+        padding: 0 8px;
+        border: 1px solid #5a5d60;
+        border-radius: 3px;
+        background: #4a4d50;
+        color: #e8e8e8;
+        font-size: 13px;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        cursor: pointer;
+      }
+
+      .pv-btn:hover {
+        background: #5a5d60;
+      }
+
+      #pv-zoom-label {
+        color: #ccc;
+        font-size: 12px;
+        min-width: 44px;
+        text-align: center;
+      }
+
+      #svg-viewer {
         flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .svg-page {
+        flex-shrink: 0;
+        background: #fff;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+      }
+
+      .svg-page svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .svg-page a {
+        cursor: default;
       }
 
       #pdf-placeholder {
@@ -813,8 +866,14 @@
     <div id="editor-body">
       <div id="cm-container"></div>
       <div id="pdf-panel">
-        <div id="pdf-placeholder">Sla op om de PDF te renderen…</div>
-        <iframe id="pdf-frame" src="" style="display: none"></iframe>
+        <div id="preview-bar">
+          <button class="pv-btn" id="pv-zoom-out" title="Uitzoomen">−</button>
+          <span id="pv-zoom-label">100%</span>
+          <button class="pv-btn" id="pv-zoom-in" title="Inzoomen">+</button>
+          <button class="pv-btn" id="pv-fit-width" title="Paginabreedte">Paginabreedte</button>
+        </div>
+        <div id="pdf-placeholder">Bezig met renderen…</div>
+        <div id="svg-viewer" style="display: none"></div>
       </div>
     </div>
     <!-- Context menu -->
