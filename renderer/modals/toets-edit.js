@@ -1,5 +1,15 @@
 import { wireSpinners, spinnerValue } from '../utils/spinners.js';
-import { showModal, closeModal, toast, escHtml, formatGrade, SEL } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  toast,
+  escHtml,
+  formatGrade,
+  SEL,
+  onModalSync,
+  showReloadNotice,
+  changedByName,
+} from '../app.js';
 import { SEC_ROMAN, SEC_ALPHA2, renderToetsen } from '../screens/toetsen.js';
 
 export async function openExamModal(existingId, afterSave = null) {
@@ -474,6 +484,26 @@ export function showExamEditor(
     </div>
   `,
     (el) => {
+      // Someone else changed or removed this exam while it is being edited
+      // (saving would be refused anyway, so reload with their version).
+      if (isEdit) {
+        onModalSync('exam', async (ev) => {
+          if (ev.id !== exam.id || ev.year !== toetsYear) return;
+          const who = await changedByName(ev);
+          if (!ev.after) {
+            showReloadNotice(`Deze toets is verwijderd door een collega.`, () => {
+              closeModal();
+              renderToetsen();
+            });
+          } else {
+            showReloadNotice(
+              `Deze toets is gewijzigd door ${who}. Het venster wordt opnieuw geladen.`,
+              () => openExamModal(exam.id, afterSave)
+            );
+          }
+        });
+      }
+
       const tbody = el.querySelector('#f-qbody');
 
       // PTA toggle button (skip wiring when top fields are locked)

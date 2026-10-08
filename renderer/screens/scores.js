@@ -208,11 +208,25 @@ export async function openScoreModal(examId, year, deps) {
         rowUpdaters.forEach((apply) => apply(ev.id, ev.after));
       });
 
-      // An N-term change by someone else is applied in place. Other exam edits
-      // need a reload of this modal (Phase 4).
-      onModalSync('exam', (ev) => {
-        if (ev.id !== examId || ev.year !== year || !activeExam || !ev.after) return;
-        if (!onlyNTermDiffers(activeExam, ev.after)) return;
+      // An N-term change by someone else is applied in place. Any other edit
+      // of this exam reloads the modal; a deleted exam closes it.
+      onModalSync('exam', async (ev) => {
+        if (ev.id !== examId || ev.year !== year || !activeExam) return;
+        if (!ev.after) {
+          showReloadNotice(
+            `Toets ${activeExam.title} is verwijderd door een collega. Het scorescherm wordt gesloten.`,
+            closeModal
+          );
+          return;
+        }
+        if (!onlyNTermDiffers(activeExam, ev.after)) {
+          const who = await changedByName(ev);
+          showReloadNotice(
+            `Toets ${ev.after.title} is gewijzigd door ${who}. Het scorescherm wordt opnieuw geladen.`,
+            () => reloadScoreModal(examId, year, deps)
+          );
+          return;
+        }
         const input = ntermSp.querySelector('.spin-val');
         if (document.activeElement === input) return; // the user's own input wins
         const val = ev.after.n_term ?? 1;

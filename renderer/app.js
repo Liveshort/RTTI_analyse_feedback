@@ -933,6 +933,53 @@ Sync.on('*', (ev) => {
   if (ev.subject && subject && ev.subject !== subject) return;
   scheduleScreenRefresh();
 });
+
+// ── "Nieuwe toets" popover ────────────────────────────────────────────────────
+// A colleague added an exam in the active subject and year: show who added
+// what in a card at the top right. It stays until it is clicked.
+Sync.on('exam', (ev) => {
+  if (ev.kind !== 'added' || !ev.after || !ev.inScope) return;
+  const me = Store.getActiveUser();
+  if (!me || ev.after._meta?.createdBy === me.id) return;
+  showExamAddedNotice(ev.after, ev.year);
+});
+
+async function showExamAddedNotice(exam, year) {
+  const creatorId = exam._meta?.createdBy;
+  const creator = creatorId ? (await Store.loadUsers()).find((u) => u.id === creatorId) : null;
+  let container = document.getElementById('bg-notices');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'bg-notices';
+    document.body.appendChild(container);
+  }
+  const schoolsoort = (exam.schoolsoort ?? []).join(' / ');
+  const details = [
+    `Klas ${exam.jaarlaag}${schoolsoort ? ` ${schoolsoort}` : ''}`,
+    exam.periode ? `periode ${exam.periode}` : null,
+    year,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const initials = creator ? creator.afkorting || creator.voornaam?.[0] || '?' : '?';
+  const card = document.createElement('div');
+  card.className = 'bg-notice';
+  card.setAttribute('role', 'status');
+  card.title = 'Klik om te sluiten';
+  card.innerHTML = `
+    <span class="user-badge-mini ${creator?.isAdmin ? 'badge-square' : 'badge-circle'}"
+      data-len="${initials.length}" style="--badge-color:${escHtml(creator?.kleur ?? '#888')}">${escHtml(initials)}</span>
+    <div class="bg-notice-body">
+      <div class="bg-notice-title">Nieuwe toets toegevoegd</div>
+      <div class="bg-notice-exam">${escHtml(exam.title)}</div>
+      <div class="bg-notice-meta">${escHtml(details)}</div>
+      <div class="bg-notice-meta">door ${escHtml(creator ? Store.fullName(creator) : 'een collega')}</div>
+    </div>
+    <button class="bg-notice-close" aria-label="Melding sluiten">✕</button>`;
+  card.addEventListener('click', () => card.remove());
+  container.appendChild(card);
+}
+
 Sync.start();
 
 // ── Init ──────────────────────────────────────────────────────────────────────

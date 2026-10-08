@@ -5,7 +5,16 @@ import {
   GRADE_GROUP_LABELS,
   GRADE_GROUP_MIDPOINTS,
 } from '../utils/grades.js';
-import { showModal, closeModal, escHtml, formatGrade, pushModalChart } from '../app.js';
+import {
+  showModal,
+  closeModal,
+  escHtml,
+  formatGrade,
+  pushModalChart,
+  onModalSync,
+  showReloadNotice,
+  modalRefresher,
+} from '../app.js';
 import { openExamModal } from './toets-edit.js';
 
 const GROUP_PALETTE = [
@@ -19,7 +28,13 @@ const GROUP_PALETTE = [
   '#F39C12',
 ];
 
-export async function openExamOverviewModal(examId, year, scoreOverride = null, isSummary = false) {
+export async function openExamOverviewModal(
+  examId,
+  year,
+  scoreOverride = null,
+  isSummary = false,
+  initialTab = 'cijferverdeling'
+) {
   const all = await Store.getExams(year);
   const exam = all.find((e) => e.id === examId);
   if (!exam) return;
@@ -1134,6 +1149,26 @@ export async function openExamOverviewModal(examId, year, scoreOverride = null, 
       });
 
       initCijferverdeling();
+      if (initialTab !== 'cijferverdeling') switchTab(initialTab);
+
+      // Background changes: new scores or edits of this exam refresh the
+      // overview silently on the same tab. (The resit summary is computed by
+      // the caller, so it is not refreshed.)
+      if (!scoreOverride) {
+        const currentTab = () =>
+          el.querySelector('.overview-tab.selected')?.dataset.tab ?? 'cijferverdeling';
+        const refresh = modalRefresher(() =>
+          openExamOverviewModal(examId, year, null, isSummary, currentTab())
+        );
+        onModalSync('scores', (ev) => {
+          if (ev.year === year && ev.subject === Store.getActiveSubject()) refresh();
+        });
+        onModalSync('exam', (ev) => {
+          if (ev.id !== examId || ev.year !== year) return;
+          if (ev.after) refresh();
+          else showReloadNotice('Deze toets is verwijderd door een collega.', closeModal);
+        });
+      }
     },
     true
   );
