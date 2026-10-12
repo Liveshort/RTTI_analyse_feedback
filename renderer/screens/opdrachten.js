@@ -110,6 +110,7 @@ export async function renderOpdrachten() {
       </div>
       <div class="card-actions">
         <button class="btn-sm btn-sm-icon" data-action="edit-opdracht" data-id="${escHtml(o.id)}" title="Opdracht bewerken">${ICONS.pen}</button>
+        <button class="btn-sm btn-sm-icon" data-action="copy-opdracht" data-id="${escHtml(o.id)}" title="Opdracht kopiëren">${ICONS.copy}</button>
         <button class="btn-sm btn-danger btn-sm-icon" data-action="del-opdracht" data-id="${escHtml(o.id)}" title="Opdracht verwijderen">${ICONS.trash}</button>
       </div>
     </div>`;
@@ -126,8 +127,23 @@ export async function renderOpdrachten() {
     .querySelectorAll('[data-action="edit-opdracht"]')
     .forEach((b) => b.addEventListener('click', () => openOpdrachtenModal(b.dataset.id)));
   container
+    .querySelectorAll('[data-action="copy-opdracht"]')
+    .forEach((b) => b.addEventListener('click', () => copyOpdracht(b, b.dataset.id)));
+  container
     .querySelectorAll('[data-action="del-opdracht"]')
     .forEach((b) => b.addEventListener('click', () => deleteOpdracht(b.dataset.id)));
+}
+
+async function copyOpdracht(btn, id) {
+  btn.disabled = true;
+  try {
+    const copy = await Store.copyOpdracht(id);
+    toast(`Opdracht gekopieerd als "${copy.naam}".`, 'success');
+    renderOpdrachten();
+  } catch (e) {
+    btn.disabled = false;
+    toast(`Kopiëren mislukt: ${e.message}`, 'error');
+  }
 }
 
 async function deleteOpdracht(id) {

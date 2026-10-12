@@ -1,6 +1,6 @@
 {
   "name": "rtti-app",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Maatwerk score analysis tool",
   "main": "main.js",
   "scripts": {
@@ -16,7 +16,10 @@
     "productName": "Maatwerk",
     "win": {
       "target": "portable",
-      "signAndEditExecutable": false
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "splashImage": "build/splash.bmp"
     },
     "nsis": {
       "oneClick": false,
@@ -53,6 +56,7 @@
     "prettier": "^3.8.1"
   },
   "dependencies": {
-    "docx": "^8.5.0"
+    "docx": "^8.5.0",
+    "pdf-lib": "^1.17.1"
   }
 }

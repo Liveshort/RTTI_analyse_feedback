@@ -11,7 +11,7 @@
  * instanceof error that occurs when using separate jsdelivr ESM bundles.
  */
 
-import { EditorState } from 'https://esm.sh/@codemirror/state@6';
+import { EditorState, RangeSetBuilder, countColumn } from 'https://esm.sh/@codemirror/state@6';
 import {
   EditorView,
   keymap,
@@ -19,6 +19,8 @@ import {
   highlightActiveLine,
   highlightActiveLineGutter,
   drawSelection,
+  Decoration,
+  ViewPlugin,
 } from 'https://esm.sh/@codemirror/view@6';
 import {
   defaultKeymap,
@@ -30,10 +32,11 @@ import {
 import {
   StreamLanguage,
   syntaxHighlighting,
-  defaultHighlightStyle,
+  HighlightStyle,
   indentOnInput,
   bracketMatching,
 } from 'https://esm.sh/@codemirror/language@6';
+import { Tag, tags } from 'https://esm.sh/@lezer/highlight@1';
 
 // ── postMessage bridge ────────────────────────────────────────────────────────
 
@@ -58,8 +61,25 @@ window.addEventListener('message', (evt) => {
 
 // ── Typst StreamLanguage definition ──────────────────────────────────────────
 
+// Lezer has no underline tag, so the stream tokens map to a custom one.
+const underlineTag = Tag.define();
+
+// Token styling lives in editor.html as .cm-<token> classes.
+const typstHighlightStyle = HighlightStyle.define([
+  { tag: tags.comment, class: 'cm-comment' },
+  { tag: tags.keyword, class: 'cm-keyword' },
+  { tag: tags.string, class: 'cm-string' },
+  { tag: tags.number, class: 'cm-number' },
+  { tag: tags.heading, class: 'cm-heading' },
+  { tag: tags.strong, class: 'cm-strong' },
+  { tag: tags.emphasis, class: 'cm-em' },
+  { tag: tags.meta, class: 'cm-meta' },
+  { tag: underlineTag, class: 'cm-underline' },
+]);
+
 const typstLanguage = StreamLanguage.define({
   name: 'typst',
+  tokenTable: { underline: underlineTag },
   languageData: { commentTokens: { line: '//' } },
   startState: () => ({
     inBlockComment: false,
@@ -171,20 +191,15 @@ const typstLanguage = StreamLanguage.define({
       return null;
     }
 
-    // Bold: *...*
-    if (stream.peek() === '*') {
-      stream.next();
-      while (!stream.eol() && stream.peek() !== '*') stream.next();
-      if (!stream.eol()) stream.next();
-      return 'strong';
-    }
-
-    // Emphasis: _..._
-    if (stream.peek() === '_') {
-      stream.next();
-      while (!stream.eol() && stream.peek() !== '_') stream.next();
-      if (!stream.eol()) stream.next();
-      return 'em';
+    // Bold *...* / emphasis _..._: like Typst, the markers only count at word
+    // boundaries (render_uitleg is no emphasis), and only with a closing marker
+    // on the same line.
+    const prev = stream.string.charAt(stream.pos - 1);
+    if (!/[\p{L}\p{N}]/u.test(prev)) {
+      if (stream.match(/^\*(?:[^*]|(?<=[\p{L}\p{N}])\*(?=[\p{L}\p{N}]))+\*(?![\p{L}\p{N}])/u))
+        return 'strong';
+      if (stream.match(/^_(?:[^_]|(?<=[\p{L}\p{N}])_(?=[\p{L}\p{N}]))+_(?![\p{L}\p{N}])/u))
+        return 'emphasis';
     }
 
     // Numbers
@@ -197,13 +212,63 @@ const typstLanguage = StreamLanguage.define({
   },
 });
 
+// ── Wrapped line indent ───────────────────────────────────────────────────────
+
+// Wrapped parts of a line start under its text, plus 2 extra columns so they
+// read as a continuation. Hanging indent: the line gets padding for the whole
+// indent and a negative text-indent of the same size, so only its first row
+// starts at the left edge (6px is CodeMirror's own .cm-line padding).
+const WRAP_EXTRA_COLS = 2;
+const _wrapIndentDecos = new Map();
+
+function wrapIndentDeco(cols) {
+  let deco = _wrapIndentDecos.get(cols);
+  if (!deco) {
+    deco = Decoration.line({
+      attributes: { style: `padding-left: calc(6px + ${cols}ch); text-indent: -${cols}ch` },
+    });
+    _wrapIndentDecos.set(cols, deco);
+  }
+  return deco;
+}
+
+function buildWrapIndent(view) {
+  const builder = new RangeSetBuilder();
+  const { doc, tabSize } = view.state;
+  let lastLine = 0;
+  for (const { from, to } of view.visibleRanges) {
+    for (let pos = from; pos <= to; ) {
+      const line = doc.lineAt(pos);
+      pos = line.to + 1;
+      if (line.number <= lastLine) continue;
+      lastLine = line.number;
+      const indent = /^[ \t]*/.exec(line.text)[0];
+      const cols = countColumn(indent, tabSize) + WRAP_EXTRA_COLS;
+      builder.add(line.from, line.from, wrapIndentDeco(cols));
+    }
+  }
+  return builder.finish();
+}
+
+const wrapIndent = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      this.decorations = buildWrapIndent(view);
+    }
+    update(update) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = buildWrapIndent(update.view);
+      }
+    }
+  },
+  { decorations: (v) => v.decorations }
+);
+
 // ── Initialisation ────────────────────────────────────────────────────────────
 
 const params = new URLSearchParams(window.location.search);
 const typFile = params.get('typFile') ?? '';
 const naam = params.get('naam') ?? 'Opdracht';
-const obsIcon = params.get('obsIcon') ?? '❌';
-const obsName = params.get('obsName') ?? 'Geen observatie';
 
 document.getElementById('editor-title-naam').textContent = naam;
 
@@ -523,8 +588,6 @@ function compileSvg(content) {
   return postToParent('rtti-render-assignment-svg', {
     typFile,
     title: naam,
-    obsIcon,
-    obsName,
     content,
   });
 }
@@ -625,11 +688,13 @@ async function init() {
       drawSelection(),
       indentOnInput(),
       bracketMatching(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      syntaxHighlighting(typstHighlightStyle),
       typstLanguage,
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       changeListener,
+      imagePasteHandler,
       EditorView.lineWrapping,
+      wrapIndent,
     ],
   });
 
@@ -1063,6 +1128,252 @@ function insertContentBlock(v, kind) {
   insertAtCursor(v, withIndent(v, CONTENT_BLOCKS[kind]));
 }
 
+// ── Opgaven ───────────────────────────────────────────────────────────────────
+// Exercises are free content in #opgave[…]; only the questions are marked with
+// #vraag(…)[…] (see lib.typ). Both are inserted at the cursor; the placeholder
+// to type over first is selected.
+
+const OPGAVE_SNIPPET = [
+  '#opgave(titel: "Titel van de opgave")[',
+  '  Inleidende tekst van de opgave.',
+  '',
+  '  #vraag(punten: 1, antwoord: [Het antwoord.])[De vraag.]',
+  ']',
+].join('\n');
+
+const VRAAG_SNIPPET = '#vraag(punten: 1, antwoord: [Het antwoord.])[De vraag.]';
+
+function insertSelecting(v, snippet, placeholder) {
+  const text = withIndent(v, snippet);
+  const { from, to } = v.state.selection.main;
+  const at = from + text.indexOf(placeholder);
+  v.dispatch({
+    changes: { from, to, insert: text },
+    selection: { anchor: at, head: at + placeholder.length },
+    scrollIntoView: true,
+  });
+  v.focus();
+}
+
+// ── Figures / images ──────────────────────────────────────────────────────────
+// Images live in data/opdrachten/images/<opdracht id>/ (see main.js). The figure
+// popup offers the opdracht's existing images, a file from disk and the
+// clipboard; Ctrl+V of an image in the editor works too. A new image is first
+// given a name, then a #figure referring to it is inserted at the cursor.
+
+const opdrachtId = params.get('id') ?? '';
+const IMAGE_MIME_EXT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+};
+const FIGURE_CAPTION = 'Onderschrift hier';
+
+const esc = (s) =>
+  String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+// Label for a new figure: the image name, made unique within the document.
+function figureLabel(name) {
+  let base = name.replace(/[^A-Za-z0-9_-]/g, '-');
+  if (!/^[A-Za-z]/.test(base)) base = 'fig-' + base;
+  const used = new Set(extractLabels(view));
+  let label = base;
+  for (let n = 2; used.has(label); n++) label = `${base}-${n}`;
+  return label;
+}
+
+function insertFigure(file, name) {
+  const snippet = withIndent(
+    view,
+    `#figure(\n  image("${file}", width: 80%),\n  caption: [${FIGURE_CAPTION}],\n) <${figureLabel(name)}>`
+  );
+  const { from, to } = view.state.selection.main;
+  const at = from + snippet.indexOf(FIGURE_CAPTION);
+  view.dispatch({
+    changes: { from, to, insert: snippet },
+    selection: { anchor: at, head: at + FIGURE_CAPTION.length },
+    scrollIntoView: true,
+  });
+  view.focus();
+}
+
+const figPopup = () => document.getElementById('popup-figure');
+const figPanel = () => figPopup().querySelector('.tb-fig-panel');
+
+function showFigurePopup() {
+  if (_activePopup !== figPopup()) {
+    openPopup(document.querySelector('[data-action="figure"]'), figPopup());
+  }
+}
+
+// First free "afbeelding-N" for a pasted image.
+async function nextImageName() {
+  const images = (await postToParent('rtti-list-images', { opdrachtId })) ?? [];
+  const taken = new Set(images.map((i) => i.name));
+  let n = 1;
+  while (taken.has(`afbeelding-${n}`)) n++;
+  return `afbeelding-${n}`;
+}
+
+// Step 1: existing images + ways to add a new one.
+async function showFigureMenu() {
+  showFigurePopup();
+  const panel = figPanel();
+  panel.innerHTML = '<div class="tb-fig-hint">Laden…</div>';
+  const images = (await postToParent('rtti-list-images', { opdrachtId })) ?? [];
+  const items = images
+    .map(
+      (img) => `
+      <button class="tb-fig-item" data-fig="use" data-file="${esc(img.file)}" data-name="${esc(img.name)}">
+        ${img.thumb ? `<img src="${esc(img.thumb)}" alt="" />` : '<span class="tb-fig-noimg">🖼️</span>'}
+        <span>${esc(img.name)}</span>
+      </button>`
+    )
+    .join('');
+  panel.innerHTML = `
+    <div class="tb-fig-title">Afbeeldingen in deze opdracht</div>
+    <div class="tb-fig-list">${items || '<div class="tb-fig-empty">Nog geen afbeeldingen.</div>'}</div>
+    <div class="tb-fig-actions">
+      <button class="tb-fig-btn" data-fig="pick">📂 Van schijf kiezen…</button>
+      <button class="tb-fig-btn" data-fig="clipboard">📋 Plakken van klembord</button>
+    </div>
+    <div class="tb-fig-error" hidden></div>
+    <div class="tb-fig-hint">Tip: Ctrl+V in de tekst plakt een afbeelding ook direct.</div>`;
+}
+
+// Step 2: name a new image. source: { kind: 'paste', base64, ext } | { kind: 'file', token }
+function showNameForm(source, defaultName) {
+  showFigurePopup();
+  const panel = figPanel();
+  panel.innerHTML = `
+    <div class="tb-fig-title">Naam van de afbeelding</div>
+    <input class="tb-symbol-search" id="fig-name" value="${esc(defaultName)}" spellcheck="false" />
+    <div class="tb-fig-error" hidden></div>
+    <div class="tb-fig-actions tb-fig-actions-end">
+      <button class="tb-fig-btn" data-fig="cancel">Annuleren</button>
+      <button class="tb-fig-btn" data-fig="overwrite" hidden>Overschrijven</button>
+      <button class="tb-fig-btn tb-fig-primary" data-fig="save">Invoegen</button>
+    </div>`;
+  panel._source = source;
+  const input = panel.querySelector('#fig-name');
+  input.focus();
+  input.select();
+  input.addEventListener('input', () => {
+    panel.querySelector('[data-fig="overwrite"]').hidden = true;
+    panel.querySelector('.tb-fig-error').hidden = true;
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveNamedImage(false);
+    if (e.key === 'Escape') {
+      closeActivePopup();
+      view.focus();
+    }
+  });
+}
+
+function showFigError(message) {
+  const el = figPanel().querySelector('.tb-fig-error');
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = false;
+}
+
+async function saveNamedImage(overwrite) {
+  const panel = figPanel();
+  const source = panel._source;
+  const name = panel.querySelector('#fig-name').value.trim();
+  const result =
+    source.kind === 'paste'
+      ? await postToParent('rtti-save-image', {
+          opdrachtId,
+          name,
+          ext: source.ext,
+          base64: source.base64,
+          overwrite,
+        })
+      : await postToParent('rtti-import-image', {
+          opdrachtId,
+          token: source.token,
+          name,
+          overwrite,
+        });
+  if (result?.ok) {
+    closeActivePopup();
+    insertFigure(result.file, result.name);
+  } else if (result?.exists) {
+    showFigError(
+      `Er bestaat al een afbeelding "${result.name}". Kies een andere naam of overschrijf hem.`
+    );
+    panel.querySelector('[data-fig="overwrite"]').hidden = false;
+  } else {
+    showFigError(result?.error ?? 'De afbeelding kon niet worden opgeslagen.');
+  }
+}
+
+async function pasteImage(base64, ext) {
+  showNameForm({ kind: 'paste', base64, ext }, await nextImageName());
+}
+
+async function pasteImageFromClipboard() {
+  const base64 = await postToParent('rtti-clipboard-image');
+  if (base64) await pasteImage(base64, 'png');
+  else showFigError('Er staat geen afbeelding op het klembord.');
+}
+
+function setupFigurePopup() {
+  figPanel().addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-fig]');
+    if (!btn) return;
+    switch (btn.dataset.fig) {
+      case 'use':
+        closeActivePopup();
+        insertFigure(btn.dataset.file, btn.dataset.name);
+        break;
+      case 'pick': {
+        const picked = await postToParent('rtti-pick-image');
+        if (picked) showNameForm({ kind: 'file', token: picked.token }, picked.name);
+        break;
+      }
+      case 'clipboard':
+        await pasteImageFromClipboard();
+        break;
+      case 'save':
+        await saveNamedImage(false);
+        break;
+      case 'overwrite':
+        await saveNamedImage(true);
+        break;
+      case 'cancel':
+        closeActivePopup();
+        view.focus();
+        break;
+    }
+  });
+}
+
+// Ctrl+V of an image (and nothing textual) in the editor.
+const imagePasteHandler = EditorView.domEventHandlers({
+  paste(event) {
+    const data = event.clipboardData;
+    if (!data || data.getData('text/plain')) return false;
+    const item = [...data.items].find((i) => i.kind === 'file' && IMAGE_MIME_EXT[i.type]);
+    if (!item) return false;
+    event.preventDefault();
+    // The clipboard items are only valid during the event: read type and file now.
+    const ext = IMAGE_MIME_EXT[item.type];
+    const reader = new FileReader();
+    reader.onload = () => pasteImage(String(reader.result).split(',')[1], ext);
+    reader.readAsDataURL(item.getAsFile());
+    return true;
+  },
+});
+
 // ── Action map ────────────────────────────────────────────────────────────────
 
 const ACTIONS = {
@@ -1072,18 +1383,9 @@ const ACTIONS = {
   'blok-context': (v) => insertContentBlock(v, 'context'),
   'blok-belangrijk': (v) => insertContentBlock(v, 'belangrijk'),
 
-  // Insert group
-  figure: (v) => {
-    const snippet = withIndent(v, '#figure(\n  image("naam.png"),\n  caption: [Bijschrift],\n)');
-    const { from, to } = v.state.selection.main;
-    const nameStart = snippet.indexOf('"') + 1;
-    const nameEnd = nameStart + 'naam.png'.length;
-    v.dispatch({
-      changes: { from, to, insert: snippet },
-      selection: { anchor: from + nameStart, head: from + nameEnd },
-    });
-    v.focus();
-  },
+  // Exercises group
+  'opgave-add': (v) => insertSelecting(v, OPGAVE_SNIPPET, 'Titel van de opgave'),
+  'vraag-add': (v) => insertSelecting(v, VRAAG_SNIPPET, 'De vraag.'),
 
   // Group 1
   bold: (v) => wrapSelection(v, '*', '*'),
@@ -1248,6 +1550,13 @@ function setupToolbar() {
     const action = btn.dataset.action;
     const popupId = btn.dataset.popup;
 
+    // Figure popup is rebuilt each time (lists the opdracht's images)
+    if (action === 'figure') {
+      if (_activePopup === figPopup()) closeActivePopup();
+      else showFigureMenu();
+      return;
+    }
+
     // Handle reference popup separately (needs live label scan)
     if (action === 'reference') {
       const popupEl = document.getElementById('popup-reference');
@@ -1278,6 +1587,7 @@ function setupToolbar() {
 }
 
 setupToolbar();
+setupFigurePopup();
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
@@ -1330,6 +1640,9 @@ function setupContextMenu() {
           selection: { anchor: from + text.length },
         });
         view.focus();
+      } else {
+        const image = await postToParent('rtti-clipboard-image');
+        if (image) await pasteImage(image, 'png');
       }
     } else if (action === 'comment') {
       toggleComment(view);
@@ -1339,16 +1652,23 @@ function setupContextMenu() {
 }
 
 // ── Math group responsive layout ──────────────────────────────────────────────
-// Threshold: width at which all 15 math buttons fit on one row.
-// Insert group adds ~99 px vs the original 836 threshold.
-const MATH_EXPAND_THRESHOLD = 1080;
+// The extra math buttons collapse into a "more" button when the full toolbar
+// would wrap onto a second row. Measured instead of a fixed width, so adding or
+// removing toolbar buttons needs no adjustment here.
 
 setupContextMenu();
 
 (function setupMathLayout() {
   const toolbar = document.getElementById('editor-toolbar');
+  const items = [...toolbar.children].filter((el) => !el.classList.contains('tb-popup'));
+  let lastWidth = -1;
   function update() {
-    toolbar.classList.toggle('tb-math-compact', toolbar.offsetWidth < MATH_EXPAND_THRESHOLD);
+    if (toolbar.offsetWidth === lastWidth) return; // height changes come from this toggle
+    lastWidth = toolbar.offsetWidth;
+    toolbar.classList.remove('tb-math-compact');
+    const top = items[0].offsetTop;
+    const wraps = items.some((el) => el.offsetTop > top + el.offsetHeight / 2);
+    toolbar.classList.toggle('tb-math-compact', wraps);
   }
   new ResizeObserver(update).observe(toolbar);
   update();

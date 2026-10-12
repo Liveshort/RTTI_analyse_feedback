@@ -12,6 +12,7 @@ import {
 import { openScoreModal } from './scores.js';
 import * as Presence from '../presence.js';
 import { openRapportModal, openRttiUitlegModal } from '../modals/rapport.js';
+import { openOpdrachtenGenererenModal } from '../modals/opdrachten-genereren.js';
 
 // ── Modal imports (used directly in this screen file) ───────────────────────
 import { openExamOverviewModal } from '../modals/toets-overzicht.js';
@@ -522,7 +523,17 @@ async function buildMenuItems(examId, kind, year) {
           label: 'Rapport genereren',
           run: () => openRapportModal(examId, year),
         },
-    { icon: ICONS.opdrachten, label: 'Opdrachten genereren', disabled: 'Nog niet beschikbaar.' },
+    {
+      icon: ICONS.opdrachten,
+      label: 'Opdrachten genereren',
+      disabled:
+        kind === 'summary'
+          ? 'Genereer de opdrachten per poging (origineel, inhaal of herkansing).'
+          : (Store.getExamsSync(year).find((e) => e.id === examId)?.obs_ids ?? []).length
+            ? null
+            : 'Er zijn geen observaties gekoppeld aan deze toets.',
+      run: () => openOpdrachtenGenererenModal(examId, year),
+    },
     'sep',
   ];
 

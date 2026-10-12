@@ -18,14 +18,6 @@ export async function openEditor(opdracht) {
   const badgeColor = badgeBtn?.style?.getPropertyValue('--badge-color') ?? '#888';
   const badgeShape = badgeBtn?.classList?.contains('badge-square') ? 'square' : 'circle';
 
-  // Resolve the first observation linked to this assignment for the header placeholder
-  const allObs = ((await window.rtti.readAllJson('observaties')) ?? []).filter((o) => o && o.id);
-  const obsById = Object.fromEntries(allObs.map((o) => [o.id, o]));
-  const firstObsId = (opdracht.observaties ?? [])[0];
-  const firstObs = firstObsId ? (obsById[firstObsId] ?? null) : null;
-  const obsIcon = firstObs?.icon ?? '❌';
-  const obsName = firstObs?.naam ?? 'Geen observatie';
-
   const params = new URLSearchParams({
     id: opdracht.id,
     typFile: opdracht.typFile,
@@ -33,8 +25,6 @@ export async function openEditor(opdracht) {
     badgeInitials,
     badgeColor,
     badgeShape,
-    obsIcon,
-    obsName,
   });
   frame.src = `editor.html?${params}`;
   overlay.classList.remove('hidden');
@@ -76,14 +66,29 @@ function handleEditorMessage(evt, frame) {
       window.rtti.writeTextFile(rest.path, rest.content).then(reply);
       break;
     case 'rtti-render-assignment':
-      window.rtti
-        .renderAssignmentPdf(rest.typFile, rest.title, rest.obsIcon, rest.obsName)
-        .then(reply);
+      window.rtti.renderAssignmentPdf(rest.typFile, rest.title).then(reply);
       break;
     case 'rtti-render-assignment-svg':
+      window.rtti.renderAssignmentSvg(rest.typFile, rest.title, rest.content).then(reply);
+      break;
+    case 'rtti-list-images':
+      window.rtti.listOpdrachtImages(rest.opdrachtId).then(reply);
+      break;
+    case 'rtti-save-image':
       window.rtti
-        .renderAssignmentSvg(rest.typFile, rest.title, rest.obsIcon, rest.obsName, rest.content)
+        .saveOpdrachtImage(rest.opdrachtId, rest.name, rest.ext, rest.base64, rest.overwrite)
         .then(reply);
+      break;
+    case 'rtti-pick-image':
+      window.rtti.pickImageFile().then(reply);
+      break;
+    case 'rtti-import-image':
+      window.rtti
+        .importOpdrachtImage(rest.opdrachtId, rest.token, rest.name, rest.overwrite)
+        .then(reply);
+      break;
+    case 'rtti-clipboard-image':
+      window.rtti.readClipboardImage().then(reply);
       break;
     case 'rtti-get-data-dir':
       window.rtti.getDataDir().then(reply);

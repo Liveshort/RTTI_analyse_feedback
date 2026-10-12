@@ -5,7 +5,7 @@ Desktop app (Electron) for teachers to manage and analyse exam results using the
 (`nat`, `bio`, `schk`, `wi`) of a school, with all data shared between teachers through a OneDrive
 folder. The interface is in Dutch.
 
-Current version: **0.1.2**
+Current version: **0.1.3**
 
 ## Features
 

@@ -79,16 +79,45 @@ contextBridge.exposeInMainWorld('rtti', {
   // Copy base_assignment.typ template to data/opdrachten/<typFile>.
   createAssignmentTypFile: (typFile) => ipcRenderer.invoke('app:createAssignmentTypFile', typFile),
 
+  // Opdracht images (data/opdrachten/images/<opdrachtId>/). Results of save/import:
+  // { ok, file, name } (file relative to data/opdrachten), { ok: false, exists: true }
+  // when the name is taken (pass overwrite = true to replace), or { ok: false, error }.
+  listOpdrachtImages: (opdrachtId) => ipcRenderer.invoke('opdracht:listImages', opdrachtId),
+  saveOpdrachtImage: (opdrachtId, name, ext, base64, overwrite) =>
+    ipcRenderer.invoke('opdracht:saveImage', opdrachtId, name, ext, base64, overwrite),
+  // File dialog; returns { token, name, ext } or null. Import with the token.
+  pickImageFile: () => ipcRenderer.invoke('opdracht:pickImage'),
+  importOpdrachtImage: (opdrachtId, token, name, overwrite) =>
+    ipcRenderer.invoke('opdracht:importImage', opdrachtId, token, name, overwrite),
+  copyOpdrachtImages: (fromId, toId) => ipcRenderer.invoke('opdracht:copyImages', fromId, toId),
+  deleteOpdrachtImages: (opdrachtId) => ipcRenderer.invoke('opdracht:deleteImages', opdrachtId),
+
+  // The image on the clipboard as base64 PNG, or null.
+  readClipboardImage: () => ipcRenderer.invoke('clipboard:readImage'),
+
   // Compile an opdracht file to PDF using the standard wrapper.
   // typFile: filename only (e.g. 'opdracht-1.typ'), title: plain-text string.
-  // obsIcon/obsName: observation emoji + label for the header card (placeholders in editor).
   // Returns { success, pdfPath } or { success: false, error }.
-  renderAssignmentPdf: (typFile, title, obsIcon, obsName) =>
-    ipcRenderer.invoke('app:renderAssignmentPdf', typFile, title, obsIcon, obsName),
+  renderAssignmentPdf: (typFile, title) =>
+    ipcRenderer.invoke('app:renderAssignmentPdf', typFile, title),
+
+  // Compile many opdrachten (one per job) and merge them into one PDF.
+  // jobs: [{ key, typFile, label, header, mode: 'student'|'answers' }]
+  // opts: { includeAnswers, duplex, outputName }
+  // Returns { success, pdfPath, pages } or { success: false, error }.
+  renderAssignmentBatch: (jobs, opts) =>
+    ipcRenderer.invoke('app:renderAssignmentBatch', jobs, opts),
+
+  // Progress of renderAssignmentBatch: cb({ done, total }). Returns an unsubscribe fn.
+  onAssignmentProgress: (cb) => {
+    const listener = (_event, progress) => cb(progress);
+    ipcRenderer.on('assignment:progress', listener);
+    return () => ipcRenderer.removeListener('assignment:progress', listener);
+  },
 
   // Compile the editor's current text to SVG pages for the live preview.
   // previewContent may contain a <__rtti_cursor> marker; the saved file is untouched.
   // Returns { success, pages: [svgString, ...] } or { success: false, error }.
-  renderAssignmentSvg: (typFile, title, obsIcon, obsName, previewContent) =>
-    ipcRenderer.invoke('app:renderAssignmentSvg', typFile, title, obsIcon, obsName, previewContent),
+  renderAssignmentSvg: (typFile, title, previewContent) =>
+    ipcRenderer.invoke('app:renderAssignmentSvg', typFile, title, previewContent),
 });

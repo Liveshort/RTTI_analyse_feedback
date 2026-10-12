@@ -1,7 +1,9 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, clipboard, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { execFile } = require('child_process');
+const { PDFDocument } = require('pdf-lib');
 const { hashContent, readWithHash, writeFileAtomic, createWatcher } = require('./sync');
 
 // Watches data/ for changes made by other teachers; created in app.whenReady().
@@ -234,6 +236,166 @@ ipcMain.handle('app:createAssignmentTypFile', (_event, typFile) => {
 });
 
 // ---------------------------------------------------------------------------
+// Opdracht images: data/opdrachten/images/<opdrachtId>/<name>.<ext>
+// Opdracht files refer to them as image("images/<opdrachtId>/<file>") (Typst
+// resolves paths relative to the opdracht file).
+// ---------------------------------------------------------------------------
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+const pickedImages = new Map(); // token -> absolute path chosen in the file dialog
+let pickSeq = 0;
+
+function opdrachtImagesDir(opdrachtId, create = true) {
+  if (!/^[\w-]+$/.test(String(opdrachtId ?? ''))) throw new Error('Ongeldige opdracht.');
+  const dir = path.join(getDataDir(), 'opdrachten', 'images', opdrachtId);
+  if (create) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// File-name-safe version of a name typed by the user ("Remweg auto!" -> "Remweg-auto").
+function cleanImageName(name) {
+  return String(name ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
+// Writes an image unless one with the same name (any extension) exists.
+// Returns { ok, file, name } with file relative to data/opdrachten, or
+// { ok: false, exists: true, name } / { ok: false, error }.
+function storeOpdrachtImage(opdrachtId, rawName, ext, buffer, overwrite) {
+  const name = cleanImageName(rawName);
+  if (!name) return { ok: false, error: 'Geef de afbeelding een naam.' };
+  ext = String(ext).toLowerCase();
+  if (!IMAGE_EXTS.includes(ext))
+    return { ok: false, error: `Bestandstype .${ext} wordt niet ondersteund.` };
+  const dir = opdrachtImagesDir(opdrachtId);
+  const existing = fs.readdirSync(dir).filter((f) => path.parse(f).name === name);
+  if (existing.length && !overwrite) return { ok: false, exists: true, name };
+  for (const f of existing) tryUnlink(path.join(dir, f)); // overwrite, maybe with another extension
+  const file = `${name}.${ext}`;
+  writeFileAtomic(path.join(dir, file), buffer);
+  watcher?.noteWrite(`opdrachten/images/${opdrachtId}/${file}`, buffer);
+  return { ok: true, file: `images/${opdrachtId}/${file}`, name };
+}
+
+// Images of one opdracht: [{ file, name, thumb }], thumb a small data URL (null for SVG).
+ipcMain.handle('opdracht:listImages', (_event, opdrachtId) => {
+  const dir = opdrachtImagesDir(opdrachtId, false);
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => IMAGE_EXTS.includes(path.extname(f).slice(1).toLowerCase()))
+    .sort((a, b) => a.localeCompare(b, 'nl'))
+    .map((f) => {
+      const img = nativeImage.createFromPath(path.join(dir, f));
+      return {
+        file: `images/${opdrachtId}/${f}`,
+        name: path.parse(f).name,
+        thumb: img.isEmpty() ? null : img.resize({ height: 48 }).toDataURL(),
+      };
+    });
+});
+
+// Save a pasted image (base64) under the given name.
+ipcMain.handle('opdracht:saveImage', (_event, opdrachtId, name, ext, base64, overwrite) =>
+  storeOpdrachtImage(opdrachtId, name, ext, Buffer.from(String(base64), 'base64'), overwrite)
+);
+
+// Let the user choose an image file. Returns { token, name, ext } or null; the
+// path itself stays here and is only used by importImage with that token.
+ipcMain.handle('opdracht:pickImage', async (event) => {
+  const res = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: 'Afbeelding kiezen',
+    filters: [{ name: 'Afbeeldingen', extensions: IMAGE_EXTS }],
+    properties: ['openFile'],
+  });
+  if (res.canceled || !res.filePaths[0]) return null;
+  const src = res.filePaths[0];
+  const token = String(++pickSeq);
+  pickedImages.set(token, src);
+  const { name, ext } = path.parse(src);
+  return { token, name: cleanImageName(name), ext: ext.slice(1).toLowerCase() };
+});
+
+// Copy the file chosen with pickImage into the opdracht's images folder.
+ipcMain.handle('opdracht:importImage', (_event, opdrachtId, token, name, overwrite) => {
+  const src = pickedImages.get(String(token));
+  if (!src) return { ok: false, error: 'Kies de afbeelding opnieuw.' };
+  const result = storeOpdrachtImage(
+    opdrachtId,
+    name,
+    path.extname(src).slice(1),
+    fs.readFileSync(src),
+    overwrite
+  );
+  if (result.ok) pickedImages.delete(String(token));
+  return result;
+});
+
+// The image on the system clipboard as base64 PNG, or null.
+ipcMain.handle('clipboard:readImage', () => {
+  const img = clipboard.readImage();
+  return img.isEmpty() ? null : img.toPNG().toString('base64');
+});
+
+// Copy all images of one opdracht to another (when an opdracht is copied).
+ipcMain.handle('opdracht:copyImages', (_event, fromId, toId) => {
+  const from = opdrachtImagesDir(fromId, false);
+  const to = opdrachtImagesDir(toId, false);
+  if (!fs.existsSync(from)) return { ok: true };
+  for (const f of fs.readdirSync(from)) {
+    const buffer = fs.readFileSync(path.join(from, f));
+    writeFileAtomic(path.join(to, f), buffer);
+    watcher?.noteWrite(`opdrachten/images/${toId}/${f}`, buffer);
+  }
+  return { ok: true };
+});
+
+// Remove an opdracht's images folder (when the opdracht is deleted). The images
+// go right away, but OneDrive keeps the emptied folder itself locked (EPERM)
+// while it syncs the deletions, so the folder is retried in the background;
+// whatever is still left is cleaned up on the next start (removeEmptyImageDirs).
+const RMDIR_RETRY_MS = 5000;
+const RMDIR_ATTEMPTS = 24; // ~2 minutes
+
+function removeDirLater(dir, attempt = 1) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (e) {
+    if (attempt < RMDIR_ATTEMPTS)
+      setTimeout(() => removeDirLater(dir, attempt + 1), RMDIR_RETRY_MS);
+    else console.error(`[opdracht] could not remove ${dir}:`, e.message);
+  }
+}
+
+ipcMain.handle('opdracht:deleteImages', (_event, opdrachtId) => {
+  const dir = opdrachtImagesDir(opdrachtId, false);
+  if (!fs.existsSync(dir)) return { ok: true };
+  for (const f of fs.readdirSync(dir)) {
+    fs.rmSync(path.join(dir, f), { recursive: true, force: true, maxRetries: 5 });
+  }
+  removeDirLater(dir);
+  return { ok: true };
+});
+
+// Remove empty image folders left behind by deletes that OneDrive blocked.
+// Only empty ones: a folder with images may belong to a colleague's opdracht
+// whose JSON hasn't synced yet.
+function removeEmptyImageDirs() {
+  const root = path.join(getDataDir(), 'opdrachten', 'images');
+  if (!fs.existsSync(root)) return;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(root, entry.name);
+    try {
+      if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+    } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Presence (data/users/<userId>.json): who is online and where they work.
 // Only this app writes the logged-in user's file. On logout, a user switch or
 // quit the file is marked offline so colleagues see them leave right away.
@@ -425,42 +587,78 @@ const CURSOR_FOREGROUND =
   `  }\n` +
   `})\n`;
 
+const typStr = (s) =>
+  '"' +
+  String(s ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"') +
+  '"';
+
+// Header shown in the editor (preview and PDF), where no real student is involved.
+// The observatie name is long on purpose, so authors see how a two-line header looks.
+function placeholderHeader(title) {
+  return {
+    title,
+    student: 'Leerling Voornaam Achternaam',
+    group: 'Klas Z vak W',
+    exam: 'Voorbeeldtoets Toetsweek X',
+    observaties: [
+      {
+        icon: '❌',
+        name: 'Een voorbeeldobservatie met een behoorlijk lange naam, zodat deze twee regels beslaat in het voorbeeld',
+      },
+    ],
+  };
+}
+
 // Build the wrapper .typ that renders an opdracht.
 // importPath: absolute Typst path (resolved against --root appDir) of the opdracht file.
+// header: { title, student, group, exam, observaties: [{ icon, name }] }
+// mode: 'student' (header + uitleg + opgaven [+ upside-down answers]) | 'answers' (answer key only)
+// The opdracht file defines setup_extra(), render_uitleg() and render_opgaven(); the
+// answers are collected by lib.typ from the #vraag markers in the document.
 function buildAssignmentWrapper(
   importPath,
-  title,
-  obsIcon,
-  obsName,
-  { cursorMarker = false } = {}
+  header,
+  { cursorMarker = false, includeAnswers = true, mode = 'student' } = {}
 ) {
-  const esc = (s) => (s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const escTitle = esc(title);
-  const escObsIcon = esc(obsIcon ?? '❌');
-  const escObsName = esc(obsName ?? 'Geen observatie');
-
-  return (
-    `#import "/data/opdrachten/lib.typ": setup, opdracht_header\n` +
-    `#import "${importPath}": setup_extra, render_uitleg, render_opgaven, render_antwoorden\n\n` +
+  const imports =
+    `#import "/data/opdrachten/lib.typ": setup, opdracht_header, antwoorden_header, ` +
+    `antwoorden_lijst, antwoorden_omgekeerd\n` +
+    `#import "${importPath}": setup_extra, render_uitleg, render_opgaven\n\n` +
     `#show: setup\n` +
     (cursorMarker ? CURSOR_FOREGROUND : '') +
-    `#setup_extra()\n\n` +
+    `#setup_extra()\n\n`;
+
+  if (mode === 'answers') {
+    return (
+      imports +
+      `#antwoorden_header(title: ${typStr(header.title)})\n\n` +
+      // The answers come from the vraag markers, so the content is laid out
+      // invisibly (taking no space) for them to exist in this document.
+      `#place(hide[#render_uitleg() #render_opgaven()])\n` +
+      `#antwoorden_lijst()\n`
+    );
+  }
+
+  const obs = (header.observaties ?? [])
+    .map((o) => `(icon: ${typStr(o.icon)}, name: ${typStr(o.name)}),`)
+    .join(' ');
+
+  return (
+    imports +
     `#opdracht_header(\n` +
-    `  title: "${escTitle}",\n` +
-    `  student: "Sandra Jansen",\n` +
-    `  group: "4A",\n` +
+    `  title: ${typStr(header.title)},\n` +
+    `  student: ${typStr(header.student)},\n` +
+    `  group: ${typStr(header.group)},\n` +
     `  exam_prefix: "N.a.v.",\n` +
-    `  exam: "TW1 H1 Vaardigheden",\n` +
-    `  obs_icon: "${escObsIcon}",\n` +
-    `  obs_name: "${escObsName}",\n` +
+    `  exam: ${typStr(header.exam)},\n` +
+    `  observaties: (${obs}),\n` +
     `)\n\n` +
-    `== Uitleg\n` +
     `#render_uitleg()\n\n` +
     `#pagebreak()\n\n` +
-    `== Opgaven\n` +
-    `#render_opgaven()\n\n` +
-    `== Antwoorden\n` +
-    `#render_antwoorden()\n`
+    `#render_opgaven()\n` +
+    (includeAnswers ? `#antwoorden_omgekeerd()\n` : '')
   );
 }
 
@@ -468,7 +666,7 @@ function buildAssignmentWrapper(
 // typFile: filename only (e.g. 'opdracht-1.typ'), relative to data/opdrachten/
 // title: plain-text title rendered as a level-1 heading in the wrapper
 // Returns { success, pdfPath } or { success: false, error }.
-ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title, obsIcon, obsName) => {
+ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title) => {
   const bin = getTypstBinary();
   const appDir = getAppDir();
   const tmpDir = path.join(appDir, 'temp');
@@ -476,9 +674,7 @@ ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title, obsIcon, obsN
 
   const wrapperContent = buildAssignmentWrapper(
     `/data/opdrachten/${typFile}`,
-    title,
-    obsIcon,
-    obsName
+    placeholderHeader(title)
   );
 
   const wrapperPath = path.join(tmpDir, '_assignment_run.typ');
@@ -510,76 +706,187 @@ function tryUnlink(p) {
   } catch (_) {}
 }
 
-ipcMain.handle(
-  'app:renderAssignmentSvg',
-  (_event, typFile, title, obsIcon, obsName, previewContent) => {
-    if (!typFile || path.basename(typFile) !== typFile) {
-      return { success: false, error: `Ongeldige bestandsnaam: ${typFile}` };
-    }
-
-    const bin = getTypstBinary();
-    const appDir = getAppDir();
-    const tmpDir = path.join(appDir, 'temp');
-    // The folder is kept (deleting it on OneDrive gives EPERM); every render
-    // uses its own file prefix, so leftovers can never show up as stale pages.
-    const svgDir = path.join(tmpDir, 'svg_preview');
-    fs.mkdirSync(svgDir, { recursive: true });
-    const runPrefix = `r${++svgRenderSeq}-`;
-    for (const f of fs.readdirSync(svgDir)) tryUnlink(path.join(svgDir, f));
-
-    const previewName = PREVIEW_PREFIX + typFile;
-    const previewPath = path.join(getDataDir(), 'opdrachten', previewName);
-    const wrapperPath = path.join(tmpDir, '_assignment_svg_run.typ');
-    try {
-      fs.writeFileSync(previewPath, previewContent ?? '', 'utf8');
-      const wrapperContent = buildAssignmentWrapper(
-        `/data/opdrachten/${previewName}`,
-        title,
-        obsIcon,
-        obsName,
-        { cursorMarker: true }
-      );
-      fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
-    } catch (e) {
-      tryUnlink(previewPath);
-      return { success: false, error: e.message };
-    }
-
-    const outputPattern = path.join(svgDir, `${runPrefix}p{p}.svg`);
-    const pageRe = new RegExp(`^${runPrefix}p(\\d+)\\.svg$`);
-
-    return new Promise((resolve) => {
-      execFile(
-        bin,
-        ['compile', '--root', appDir, wrapperPath, outputPattern],
-        { maxBuffer: 10 * 1024 * 1024 },
-        (err, _stdout, stderr) => {
-          tryUnlink(wrapperPath);
-          tryUnlink(previewPath);
-          if (err) {
-            // Show the real filename instead of the temporary preview copy.
-            const error = (stderr || err.message).split(previewName).join(typFile);
-            resolve({ success: false, error });
-            return;
-          }
-          try {
-            const files = fs
-              .readdirSync(svgDir)
-              .map((f) => pageRe.exec(f))
-              .filter(Boolean)
-              .sort((a, b) => Number(a[1]) - Number(b[1]))
-              .map((m) => path.join(svgDir, m[0]));
-            const pages = files.map((f) => fs.readFileSync(f, 'utf8'));
-            files.forEach(tryUnlink);
-            resolve({ success: true, pages });
-          } catch (e) {
-            resolve({ success: false, error: e.message });
-          }
-        }
-      );
-    });
+ipcMain.handle('app:renderAssignmentSvg', (_event, typFile, title, previewContent) => {
+  if (!typFile || path.basename(typFile) !== typFile) {
+    return { success: false, error: `Ongeldige bestandsnaam: ${typFile}` };
   }
-);
+
+  const bin = getTypstBinary();
+  const appDir = getAppDir();
+  const tmpDir = path.join(appDir, 'temp');
+  // The folder is kept (deleting it on OneDrive gives EPERM); every render
+  // uses its own file prefix, so leftovers can never show up as stale pages.
+  const svgDir = path.join(tmpDir, 'svg_preview');
+  fs.mkdirSync(svgDir, { recursive: true });
+  const runPrefix = `r${++svgRenderSeq}-`;
+  for (const f of fs.readdirSync(svgDir)) tryUnlink(path.join(svgDir, f));
+
+  const previewName = PREVIEW_PREFIX + typFile;
+  const previewPath = path.join(getDataDir(), 'opdrachten', previewName);
+  const wrapperPath = path.join(tmpDir, '_assignment_svg_run.typ');
+  try {
+    fs.writeFileSync(previewPath, previewContent ?? '', 'utf8');
+    const wrapperContent = buildAssignmentWrapper(
+      `/data/opdrachten/${previewName}`,
+      placeholderHeader(title),
+      { cursorMarker: true }
+    );
+    fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
+  } catch (e) {
+    tryUnlink(previewPath);
+    return { success: false, error: e.message };
+  }
+
+  const outputPattern = path.join(svgDir, `${runPrefix}p{p}.svg`);
+  const pageRe = new RegExp(`^${runPrefix}p(\\d+)\\.svg$`);
+
+  return new Promise((resolve) => {
+    execFile(
+      bin,
+      ['compile', '--root', appDir, wrapperPath, outputPattern],
+      { maxBuffer: 10 * 1024 * 1024 },
+      (err, _stdout, stderr) => {
+        tryUnlink(wrapperPath);
+        tryUnlink(previewPath);
+        if (err) {
+          // Show the real filename instead of the temporary preview copy.
+          const error = (stderr || err.message).split(previewName).join(typFile);
+          resolve({ success: false, error });
+          return;
+        }
+        try {
+          const files = fs
+            .readdirSync(svgDir)
+            .map((f) => pageRe.exec(f))
+            .filter(Boolean)
+            .sort((a, b) => Number(a[1]) - Number(b[1]))
+            .map((m) => path.join(svgDir, m[0]));
+          const pages = files.map((f) => fs.readFileSync(f, 'utf8'));
+          files.forEach(tryUnlink);
+          resolve({ success: true, pages });
+        } catch (e) {
+          resolve({ success: false, error: e.message });
+        }
+      }
+    );
+  });
+});
+
+// Compile many opdrachten into one PDF (Opdrachten genereren / Antwoordsleutel).
+// Every job is compiled on its own: opdracht files share function names and may
+// contain labels, so several of them (or several copies) can't live in one Typst
+// document. The resulting PDFs are merged with pdf-lib.
+//   jobs: [{ key, typFile, label, header, mode }] in output order; jobs with the
+//         same key (one student) are kept together. mode: 'student' | 'answers'.
+//   opts: { includeAnswers, duplex, outputName }
+//         duplex: every key starts on an odd page (blank pages are inserted).
+// Progress is reported to the sender as 'assignment:progress' { done, total }.
+// Returns { success, pdfPath, pages } or { success: false, error }.
+const BATCH_PARALLEL = Math.max(2, Math.min(4, os.cpus().length - 1));
+let batchSeq = 0;
+
+function compileTypst(bin, appDir, wrapperPath, outputPdf) {
+  return new Promise((resolve) => {
+    execFile(
+      bin,
+      ['compile', '--root', appDir, wrapperPath, outputPdf],
+      { maxBuffer: 10 * 1024 * 1024 },
+      (err, _stdout, stderr) => resolve(err ? stderr || err.message : null)
+    );
+  });
+}
+
+ipcMain.handle('app:renderAssignmentBatch', async (event, jobs, opts = {}) => {
+  const { includeAnswers = true, duplex = false, outputName = 'opdrachten.pdf' } = opts;
+  if (!Array.isArray(jobs) || jobs.length === 0) {
+    return { success: false, error: 'Er is niets om te genereren.' };
+  }
+  for (const job of jobs) {
+    if (!job.typFile || path.basename(job.typFile) !== job.typFile) {
+      return { success: false, error: `Ongeldige bestandsnaam: ${job.typFile}` };
+    }
+  }
+  if (path.basename(outputName) !== outputName) {
+    return { success: false, error: `Ongeldige bestandsnaam: ${outputName}` };
+  }
+
+  const bin = getTypstBinary();
+  const appDir = getAppDir();
+  const tmpDir = path.join(appDir, 'temp');
+  // The folder is kept between runs (deleting it on OneDrive gives EPERM).
+  const runDir = path.join(tmpDir, 'opdrachten_run');
+  fs.mkdirSync(runDir, { recursive: true });
+  const prefix = `b${++batchSeq}-`;
+
+  const pdfPaths = new Array(jobs.length);
+  let next = 0;
+  let done = 0;
+  let failure = null;
+  const report = () => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('assignment:progress', { done, total: jobs.length });
+    }
+  };
+
+  async function worker() {
+    while (!failure && next < jobs.length) {
+      const i = next++;
+      const job = jobs[i];
+      const wrapperPath = path.join(runDir, `${prefix}${i}.typ`);
+      const outputPdf = path.join(runDir, `${prefix}${i}.pdf`);
+      fs.writeFileSync(
+        wrapperPath,
+        buildAssignmentWrapper(`/data/opdrachten/${job.typFile}`, job.header ?? {}, {
+          includeAnswers,
+          mode: job.mode,
+        }),
+        'utf8'
+      );
+      const error = await compileTypst(bin, appDir, wrapperPath, outputPdf);
+      tryUnlink(wrapperPath);
+      if (error) {
+        failure = failure ?? `Fout in opdracht "${job.label ?? job.typFile}":\n\n${error}`;
+        return;
+      }
+      pdfPaths[i] = outputPdf;
+      done++;
+      report();
+    }
+  }
+
+  const cleanup = () => {
+    for (const f of fs.readdirSync(runDir)) {
+      if (f.startsWith(prefix)) tryUnlink(path.join(runDir, f));
+    }
+  };
+
+  try {
+    report();
+    await Promise.all(Array.from({ length: Math.min(BATCH_PARALLEL, jobs.length) }, worker));
+    if (failure) return { success: false, error: failure };
+
+    const merged = await PDFDocument.create();
+    let prevKey;
+    for (let i = 0; i < jobs.length; i++) {
+      if (duplex && i > 0 && jobs[i].key !== prevKey && merged.getPageCount() % 2 === 1) {
+        const last = merged.getPage(merged.getPageCount() - 1);
+        merged.addPage([last.getWidth(), last.getHeight()]);
+      }
+      prevKey = jobs[i].key;
+      const src = await PDFDocument.load(fs.readFileSync(pdfPaths[i]));
+      const pages = await merged.copyPages(src, src.getPageIndices());
+      pages.forEach((p) => merged.addPage(p));
+    }
+
+    const outputPdf = path.join(tmpDir, outputName);
+    fs.writeFileSync(outputPdf, await merged.save());
+    return { success: true, pdfPath: outputPdf, pages: merged.getPageCount() };
+  } catch (e) {
+    return { success: false, error: e.message };
+  } finally {
+    cleanup();
+  }
+});
 
 // Remove preview copies left behind by a crash mid-compile.
 function cleanupStalePreviewFiles() {
@@ -613,7 +920,10 @@ function createWindow() {
       nodeIntegration: false,
     },
     title: 'Maatwerk',
+    // Packaged builds take the icon embedded in the .exe; in dev the window would show Electron's.
+    ...(!app.isPackaged && { icon: path.join(__dirname, 'build', 'icon.ico') }),
   });
+  win.removeMenu();
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   if (!app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
 }
@@ -660,6 +970,8 @@ function seedInitialData() {
     );
   }
   fs.mkdirSync(path.join(dataDir, 'fotos'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'opdrachten', 'images'), { recursive: true });
+  removeEmptyImageDirs();
 }
 
 app.whenReady().then(() => {

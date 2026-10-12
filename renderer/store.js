@@ -1117,6 +1117,29 @@ const Store = (() => {
     await loadOpdrachten();
   }
 
+  // Copy an opdracht with its Typst file and images; image paths in the copy
+  // point to the copy's own images folder. Returns the new opdracht.
+  async function copyOpdracht(id) {
+    const original = getOpdrachtenSync().find((o) => o.id === id);
+    if (!original) throw new Error('Opdracht niet gevonden.');
+    const newId = `opdracht_${Date.now()}`;
+    const typFile = `${newId}.typ`;
+    const content = original.typFile
+      ? await window.rtti.readTextFile(`opdrachten/${original.typFile}`)
+      : null;
+    if (content == null) await window.rtti.createAssignmentTypFile(typFile);
+    else
+      await window.rtti.writeTextFile(
+        `opdrachten/${typFile}`,
+        content.split(`images/${id}/`).join(`images/${newId}/`)
+      );
+    await window.rtti.copyOpdrachtImages(id, newId);
+    const { _meta, ...rest } = JSON.parse(JSON.stringify(original));
+    const copy = { ...rest, id: newId, naam: `${original.naam} (kopie)`, typFile };
+    await upsertOpdracht(copy);
+    return copy;
+  }
+
   async function deleteOpdracht(id) {
     const opdracht = getOpdrachtenSync().find((o) => o.id === id);
     cache['opdrachten'] = undefined;
@@ -1124,7 +1147,111 @@ const Store = (() => {
     if (opdracht?.typFile) {
       await window.rtti.deleteFile(`opdrachten/${opdracht.typFile}`);
     }
+    await window.rtti.deleteOpdrachtImages(id);
     await loadOpdrachten();
+  }
+
+  // ── Opdrachten genereren (per exam) ───────────────────────────────────────
+  // exam.opdrachten = { [obsId]: [opdrachtId, …] } couples the observaties of an
+  // exam to remedial opdrachten. Observaties without a saved coupling fall back
+  // to the matching opdrachten that list the observatie in their observaties[].
+
+  // Opdracht fits the exam's vak, jaarlaag and schoolsoort (empty lists always fit).
+  function opdrachtMatchesExam(opdracht, exam) {
+    const subject = exam.subject ?? _activeSubject;
+    const vakken = opdracht.vakken ?? [];
+    const vakOk =
+      !vakken.length || vakken.some((v) => (subject === 'wi' ? WI_VARIANTS.has(v) : v === subject));
+    const jl = opdracht.jaarlagen ?? [];
+    const jlOk = !jl.length || !exam.jaarlaag || jl.map(String).includes(String(exam.jaarlaag));
+    const ss = opdracht.schoolsoort ?? [];
+    const examSS = exam.schoolsoort ?? [];
+    const ssOk = !ss.length || !examSS.length || ss.some((s) => examSS.includes(s));
+    return vakOk && jlOk && ssOk;
+  }
+
+  // The coupling to use for every observatie of the exam (saved or default).
+  function getOpdrachtCoupling(exam) {
+    const all = getOpdrachtenSync();
+    const exists = new Set(all.map((o) => o.id));
+    const coupling = {};
+    for (const obsId of exam.obs_ids ?? []) {
+      const saved = exam.opdrachten?.[obsId];
+      coupling[obsId] = saved
+        ? saved.filter((id) => exists.has(id))
+        : all
+            .filter((o) => (o.observaties ?? []).includes(obsId) && opdrachtMatchesExam(o, exam))
+            .map((o) => o.id);
+    }
+    return coupling;
+  }
+
+  // Saves the coupling into the latest version of the exam on disk (like the
+  // N-term: one field, so other edits to the exam are never lost).
+  async function setExamOpdrachten(examId, coupling, year, subject = _activeSubject) {
+    const saved = await update(ypExam(year, examId), (exam, onDisk) => {
+      if (!onDisk) throw new Error(`Toets ${examId} bestaat niet meer.`);
+      exam.opdrachten = coupling;
+      return stampMeta(exam, onDisk);
+    });
+    putCachedExam(`${year}/exams/${saved.subject ?? subject}`, saved);
+    return saved;
+  }
+
+  /**
+   * Who gets which opdracht for `exam`, given `coupling` ({ obsId: [opdrachtId] }).
+   * Returns {
+   *   students: [{ student, group, items: [{ opdracht, obs: [observatie, …] }] }]
+   *             — only students that receive something, sorted by group then name;
+   *   obsStudents: { [obsId]: [studentId, …] } — every student with that observatie.
+   * }
+   * An opdracht coupled to several observaties of one student is listed once.
+   */
+  async function getOpdrachtAssignments(exam, year, coupling) {
+    const subject = exam.subject ?? _activeSubject;
+    await Promise.all([
+      loadYear(year, subject),
+      preloadScores(year, subject),
+      getObservaties(subject),
+      loadOpdrachten(),
+    ]);
+    const obsById = Object.fromEntries(getObservatiesSync(subject).map((o) => [o.id, o]));
+    const opById = Object.fromEntries(getOpdrachtenSync().map((o) => [o.id, o]));
+    const groups = getGroupsSync(year, subject);
+    const examObs = exam.obs_ids ?? [];
+
+    const obsStudents = Object.fromEntries(examObs.map((id) => [id, []]));
+    const students = [];
+    for (const s of getStudentsSync(year)) {
+      const rec = await getStudentScores(s.id, year, subject);
+      const own = new Set(rec?.observations?.[exam.id] ?? []);
+      const items = new Map(); // opdrachtId -> { opdracht, obs }
+      for (const obsId of examObs) {
+        if (!own.has(obsId)) continue;
+        obsStudents[obsId].push(s.id);
+        for (const opId of coupling[obsId] ?? []) {
+          if (!opById[opId] || !obsById[obsId]) continue;
+          if (!items.has(opId)) items.set(opId, { opdracht: opById[opId], obs: [] });
+          items.get(opId).obs.push(obsById[obsId]);
+        }
+      }
+      if (!items.size) continue;
+      const ownGroups = groups.filter((g) => g.student_ids.includes(s.id));
+      const group =
+        ownGroups.find((g) => String(g.jaarlaag) === String(exam.jaarlaag)) ?? ownGroups[0] ?? null;
+      students.push({ student: s, group, items: [...items.values()] });
+    }
+
+    const cmp = (a, b) => (a ?? '').localeCompare(b ?? '', 'nl', { numeric: true });
+    students.sort(
+      (a, b) =>
+        !a.group - !b.group ||
+        cmp(a.group?.name, b.group?.name) ||
+        cmp(a.student.achternaam, b.student.achternaam) ||
+        cmp(a.student.voornaam, b.student.voornaam) ||
+        cmp(fullName(a.student), fullName(b.student))
+    );
+    return { students, obsStudents };
   }
 
   // ── External changes (other teachers, reported by the watcher in main.js) ──
@@ -1355,6 +1482,11 @@ const Store = (() => {
     getOpdrachtenSync,
     getOpdrachten,
     upsertOpdracht,
+    copyOpdracht,
     deleteOpdracht,
+    opdrachtMatchesExam,
+    getOpdrachtCoupling,
+    setExamOpdrachten,
+    getOpdrachtAssignments,
   };
 })();

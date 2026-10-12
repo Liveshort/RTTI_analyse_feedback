@@ -274,6 +274,102 @@
       }
 
       /* Reference picker */
+      /* Figure popup */
+      .tb-fig-panel {
+        width: 280px;
+        padding: 4px;
+        font-size: 13px;
+      }
+      .tb-fig-title {
+        font-weight: 600;
+        font-size: 12px;
+        color: #5a6575;
+        margin: 2px 2px 6px;
+      }
+      .tb-fig-list {
+        max-height: 220px;
+        overflow-y: auto;
+        margin-bottom: 8px;
+      }
+      .tb-fig-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 4px 6px;
+        border: none;
+        background: none;
+        border-radius: 3px;
+        font: inherit;
+        color: #2c3e50;
+        text-align: left;
+        cursor: pointer;
+      }
+      .tb-fig-item:hover {
+        background: #e8edf4;
+      }
+      .tb-fig-item img,
+      .tb-fig-noimg {
+        width: 48px;
+        height: 32px;
+        object-fit: contain;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f4f6f9;
+        border-radius: 2px;
+      }
+      .tb-fig-empty,
+      .tb-fig-hint {
+        color: #7f8c8d;
+        font-size: 12px;
+        padding: 2px;
+      }
+      .tb-fig-hint {
+        margin-top: 6px;
+        font-style: italic;
+      }
+      .tb-fig-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .tb-fig-actions-end {
+        flex-direction: row;
+        justify-content: flex-end;
+        margin-top: 6px;
+      }
+      .tb-fig-btn {
+        padding: 5px 10px;
+        border: 1px solid #d0d5de;
+        border-radius: 3px;
+        background: #fff;
+        font: inherit;
+        color: #2c3e50;
+        text-align: left;
+        cursor: pointer;
+      }
+      .tb-fig-btn:hover {
+        background: #e8edf4;
+      }
+      .tb-fig-primary {
+        background: #4a90d9;
+        border-color: #4a90d9;
+        color: #fff;
+      }
+      .tb-fig-primary:hover {
+        background: #357abd;
+      }
+      .tb-fig-error {
+        color: #c0392b;
+        font-size: 12px;
+        margin: 4px 2px;
+      }
+      .tb-fig-panel [hidden] {
+        display: none;
+      }
+
       .tb-ref-panel {
         width: 240px;
       }
@@ -740,16 +836,26 @@
 
       <div class="tb-divider"></div>
 
+      <!-- Group 2a': Exercises -->
+      <div class="tb-group" id="tb-opgaven">
+        <button class="tb-btn tb-btn-wide" data-action="opgave-add" title="Nieuwe opgave">
+          ➕
+        </button>
+        <button class="tb-btn tb-btn-wide" data-action="vraag-add" title="Nieuwe vraag">❓</button>
+      </div>
+
+      <div class="tb-divider"></div>
+
       <!-- Group 2b: Insert -->
       <div class="tb-group" id="tb-insert">
-        <button class="tb-btn tb-btn-wide" data-action="figure" title="Nieuw figuur…">🖼️</button>
+        <button class="tb-btn tb-btn-wide" data-action="figure" title="Figuur toevoegen">🖼️</button>
         <button
           class="tb-btn tb-btn-wide"
           data-action="tabel-open"
           data-popup="popup-tabel"
           title="Nieuwe tabel…"
         >
-          ▦
+          🗓️
         </button>
         <button
           class="tb-btn tb-btn-wide"
@@ -757,8 +863,11 @@
           data-popup="popup-grid"
           title="Nieuw grid…"
         >
-          ◫
+          🪟
         </button>
+      </div>
+      <div id="popup-figure" class="tb-popup" style="display: none">
+        <div class="tb-fig-panel"></div>
       </div>
       <div id="popup-tabel" class="tb-popup" style="display: none"></div>
       <div id="popup-grid" class="tb-popup" style="display: none"></div>

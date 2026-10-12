@@ -35,7 +35,7 @@ Filesystem (data/ folder)
 - **renderer/store.js** — Global `Store` (classic script). Data access layer with in-memory cache, all RTTI business logic, `applyExternalChange()` to patch the cache when other teachers change files.
 - **renderer/app.js** — ES module entry: navigation, modal system, toasts, filter bar, shared helpers (`escHtml`, …).
 - **renderer/screens/** — One module per tab: startup, leerlingen, groepen, toetsen, scores, observaties, opdrachten, gebruikers, school.
-- **renderer/modals/** — toets-edit, toets-overzicht (exam charts), herkansing, rapport, profiel (student charts), groep-edit, groep-leerlingen, leerling-edit, editor.
+- **renderer/modals/** — toets-edit, toets-overzicht (exam charts), herkansing, rapport, opdrachten-genereren, profiel (student charts), groep-edit, groep-leerlingen, leerling-edit, editor.
 - **renderer/sync.js** — `Sync.on(type, handler)` pub/sub for external changes. Screens/modals subscribe when built and unsubscribe when torn down.
 - **renderer/presence.js** — Heartbeat to `data/users/<userId>.json`; shows colleagues online and where they are in the score grid.
 - **renderer/editor.html + editor-init.js** — CodeMirror 6 Typst editor in an iframe (`#editor-frame`); proxies `window.rtti` calls via postMessage through `modals/editor.js`.
@@ -53,8 +53,11 @@ Filesystem (data/ folder)
 
 - Typst binary in `bin/typst/<platform>/<arch>/`; only `win/x86_64` is packaged (to `resources/typst`).
 - Templates in `include/templates/`: `rtti_export.typ` (exam rapport), `lib.typ` (opdracht styling, copied to `data/opdrachten/lib.typ` on every start), `base_assignment.typ` (new opdracht skeleton).
+- Opdracht `.typ` files (`#import "lib.typ": *`) define `setup_extra()`, `render_uitleg()` and `render_opgaven()`. Exercises are free content in `#opgave(titel: …)[…]` (a numbered, page-breakable gray figure, labelable like the other blocks); only questions are marked with `#vraag(punten: …, antwoord: […])[…]`, which draws the indented question (letter a, b, … — none when it's the only vraag of its opgave — and italic points) and leaves a `<__rtti_vraag>` metadata marker. A vraag directly followed by another vraag gets no space below it (`_direct_gevolgd()`, comparing top/bottom marker positions). The answers are collected from those markers via `query`, so questions may sit anywhere (grids, figures): upside down and gray at the bottom of the last page for students (`antwoorden_omgekeerd()`, a bottom float), upright for the answer key (`antwoorden_lijst()`; the wrapper lays the content out invisibly with `place(hide[…])` so the markers exist). The editor's ➕ / ❓ buttons insert an opgave / vraag at the cursor.
+- Opdracht images: the editor's 🖼️ popup lists the opdracht's images (thumbnails come from main as data URLs — the editor CSP allows only `data:` images) and adds new ones from disk (`opdracht:pickImage` returns a token, the path stays in main) or the clipboard; Ctrl+V of an image in the editor does the same. A new image is named first (name clashes ask to overwrite), saved by main.js to `data/opdrachten/images/<id>/`, and a `#figure(image("images/<id>/…", width: 80%), caption: […]) <label>` is inserted at the cursor. Documents use `lang: "nl"` (captions/references say "Figuur").
 - Pattern: main.js serialises JS data to Typst literals (`toTypst()` in `app:renderRapportPdf`), writes a wrapper `.typ` into `temp/`, compiles with `--root <appDir>`, then deletes the wrapper. Typst can only read files under the app dir, so templates are copied into `temp/` first.
-- Opdrachten: `buildAssignmentWrapper()` adds the header (`opdracht_header` in lib.typ — student, group, exam, observatie are currently placeholders). Live preview compiles to SVG pages.
+- Opdrachten: `buildAssignmentWrapper()` adds the header (`opdracht_header` in lib.typ; the editor uses placeholder student data). Live preview compiles to SVG pages.
+- Opdrachten genereren (`app:renderAssignmentBatch`): every (student, opdracht) is compiled as its own document — opdracht files share function names and may contain labels, so they can't be combined in one Typst document — and the PDFs are merged with **pdf-lib**, padding with blank pages so each student starts on an odd page (duplex).
 
 ## Data Structure
 
@@ -69,10 +72,11 @@ data/
 ├── users/<userId>.json              presence
 ├── observaties/<obsId>.json         { id, naam, icon, uitleg, leeradvies, jaarlagen[], subjects[], schoolsoort[] }
 ├── opdrachten/<id>.json + <id>.typ  { id, naam, beschrijving, vakken[], jaarlagen[], schoolsoort[], observaties[], typFile }
+│   └── images/<id>/<naam>.<ext>      figures of one opdracht (removed with the opdracht)
 ├── templates/                       RTTI explanation/advice texts per subject + jaarlaag
 └── YYYY-YYYY/
     ├── students-YYYY-YYYY.json
-    ├── exams/<examId>.json
+    ├── exams/<examId>.json            { …, obs_ids[], opdrachten: {obsId: [opdrachtId]} }
     ├── groups/<groupId>.json
     └── scores/<subject>/<studentId>.json   { student_id, scores: {examId: {qId: value}}, observations: {examId: …} }
 ```
@@ -105,6 +109,7 @@ data/
 - Score values: numeric (0–max), `null` (not yet filled), or `'N'` (not evaluated)
 - Grade on a 9-point scale + n-term with the standard CvTE bounds — see `calcGrade()` / `calcResults()` in store.js
 - Resits (inhaal/herkansing) are separate exams linked to a parent; `computeBestGradeMap()` / `resolveBestAttempts()` pick the best attempt
+- Opdrachten genereren: `exam.opdrachten` couples the exam's observaties to opdrachten (observaties without a saved coupling default to matching opdrachten that list them, see `getOpdrachtCoupling()`); `getOpdrachtAssignments()` gives each student who got an observatie the coupled opdrachten, once per opdracht
 
 ## Tech Stack
 
@@ -113,6 +118,7 @@ data/
 | Desktop | Electron | ^40 |
 | Packaging | electron-builder | ^26 (portable target) |
 | PDF | Typst (bundled binary) | — |
+| PDF merging | pdf-lib (main process) | ^1.17 |
 | Score grid | Handsontable | 14.3.0 (CDN) |
 | Charts | Chart.js + annotation plugin | 4.4.2 / 3.0.1 (CDN) |
 | Editor | CodeMirror 6 | esm.sh |
@@ -133,21 +139,15 @@ data/
 
 ## Roadmap
 
-All original phases (scaffold, management screens, score grid, reports, profiles/charts, import, packaging) are done; Word export was replaced by Typst PDFs and the planned Excel import by CSV import. Next, in order:
+All original phases (scaffold, management screens, score grid, reports, profiles/charts, import, packaging) and the opdrachten workflow are done; Word export was replaced by Typst PDFs and the planned Excel import by CSV import. Next, in order:
 
-### 1. Opdrachten workflow
-- Enable `Opdrachten genereren` in `buildMenuItems()` (screens/toetsen.js, currently `disabled: 'Nog niet beschikbaar.'`).
-- New modal: for the observaties used on that exam, couple one or more opdrachten (pre-select opdrachten whose `observaties[]` already contain the observatie).
-- Assign: every student who got that observatie on the exam receives the coupled opdracht(en).
-- Output: one PDF, ordered by student name, with the real student/group/exam/observatie in `opdracht_header` (replace the placeholders in `buildAssignmentWrapper()`).
-
-### 2. Praktische opdrachten (PO)
-- **Templates (rubrics)** — defined beforehand by the user, own editor modal. A template has categories (inleiding, theorie, resultaten, grafieken, taalgebruik, …); each category has score intervals with a description per interval.
+### 1. Praktische opdrachten (PO)
+- **Templates (rubrics)** — defined beforehand by the user, own editor modal. A template has categories (inleiding, theorie, resultaten, grafieken, taalgebruik, …); each category has score intervals with a description per interval. Templates are stored in `data/po-templates/`, subject-scoped like observaties.
 - **PO aanmaken** — button on the Toetsen tab; modal like toets-edit but choosing a template instead of a question structure.
-- **Werkgroepjes** — POs are usually done in groups, so students need to be grouped per PO.
+- **Werkgroepjes** — POs are usually done in groups, so students need to be grouped per PO. Groups will get a grade as a group. An individual bonus / malus can be applied to the individual student grades afterwards.
 - **Beoordelen** — grading modal: pick a level per category, room for remarks. Grade calculated like exams (`calcGrade`).
 - **Feedbackrapport** — pretty per-student PDF (Typst), like the exam rapport but with more written feedback.
-- Open design questions: where templates are stored (likely `data/po-templates/`, subject-scoped like observaties); whether group grades can differ per student; how POs appear in profile charts and the best-attempt logic.
+- PO's appear in profile charts as diagonally striped versions of exams: blue striped for a regular PO, red-striped for a PTA PO.
 
-### 3. Graphs to PDF
+### 2. Graphs to PDF
 - Export profile (profiel.js) and exam overview (toets-overzicht.js) charts to PDF for colleagues/parents: render Chart.js canvases to PNG (`toBase64Image()`), pass them to main.js, lay them out with Typst.
