@@ -48,6 +48,9 @@ let undoKeydownHandler = null;
 let undoBtnEl = null;
 let redoBtnEl = null;
 const MAX_HISTORY = 50;
+// Numpad '.' writes N instead of a decimal point (toggle in the modal header;
+// kept for the rest of the app session).
+let numpadDotIsN = true;
 
 // ── Background changes (other teachers) ──────────────────────────────────────
 // One updater per group grid: (studentId, scoreRecord) => applies that record.
@@ -153,8 +156,12 @@ export async function openScoreModal(examId, year, deps) {
         <button class="btn-secondary" id="sc-undo" title="Ongedaan maken (Ctrl+Z)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B6;</button>
         <button class="btn-secondary" id="sc-redo" title="Opnieuw (Ctrl+Y)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B7;</button>
         <button class="btn-secondary" id="sc-help" disabled
-          title="Navigeer sneller door gebruik te maken van de numpad:&#10;0-9: Punten invullen&#10;Punt (.): N invullen&#10;Enter: Bevestigen &amp; volgende veld&#10;/ of *: Vorige / volgende veld&#10;- of +: Vorige / volgende leerling"
+          title="Navigeer sneller door gebruik te maken van de numpad:&#10;0-9: Punten invullen&#10;Punt (.): N invullen (als '. → N' aangevinkt is)&#10;Enter: Bevestigen &amp; volgende veld&#10;/ of *: Vorige / volgende veld&#10;- of +: Vorige / volgende leerling"
           style="cursor:default;color:#9aa0ab;border-color:#d0d6df;">Help ?</button>
+        <label class="sc-dot-toggle"
+          title="Als deze checkbox aangevinkt is, wordt de Numpad '.' een sneltoets voor &quot;Niet gemaakt&quot;. Je kunt dan geen halve punten meer invoeren met alleen het numpad.">
+          <input type="checkbox" id="sc-dot-n" ${numpadDotIsN ? 'checked' : ''} /> . → N
+        </label>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         <button class="btn-secondary" id="sc-edit-exam">Toets bewerken</button>
@@ -184,6 +191,10 @@ export async function openScoreModal(examId, year, deps) {
         .querySelectorAll('.spin-btn')
         .forEach((b) => b.addEventListener('click', () => setTimeout(handleNtermChange, 0)));
       ntermSp.querySelector('.spin-val').addEventListener('change', handleNtermChange);
+
+      el.querySelector('#sc-dot-n').addEventListener('change', (e) => {
+        numpadDotIsN = e.target.checked;
+      });
 
       undoBtnEl = el.querySelector('#sc-undo');
       redoBtnEl = el.querySelector('#sc-redo');
@@ -352,7 +363,7 @@ function onlyNTermDiffers(a, b) {
 }
 
 // Groups (in display order) whose students take this exam.
-function examGroups(exam, year, jaarlaag = exam.jaarlaag) {
+export function examGroups(exam, year, jaarlaag = exam.jaarlaag) {
   const examSchoolsoort = exam.schoolsoort ?? [];
   return Store.getGroupsSync(year)
     .filter((g) => {
@@ -363,7 +374,7 @@ function examGroups(exam, year, jaarlaag = exam.jaarlaag) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function groupStudentsOf(group, allStudents) {
+export function groupStudentsOf(group, allStudents) {
   return allStudents
     .filter((s) => group.student_ids.includes(s.id))
     .sort((a, b) => (a.achternaam ?? '').localeCompare(b.achternaam ?? ''));
@@ -435,7 +446,10 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
     const N = exam.questions.length;
     const gridData = [];
     const allObs = Store.getObservatiesSync();
-    activeObs = (exam.obs_ids ?? []).map((id) => allObs.find((o) => o.id === id)).filter(Boolean);
+    activeObs = (exam.obs_ids ?? [])
+      .map((id) => allObs.find((o) => o.id === id))
+      .filter(Boolean)
+      .sort((a, b) => a.naam.localeCompare(b.naam, 'nl'));
 
     const scoreRecs = await Promise.all(
       groupStudents.map((s) => Store.getStudentScores(s.id, year))
@@ -449,7 +463,7 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
       const row = [String(s.id), Store.fullName(s)];
       exam.questions.forEach((q) => {
         const v = examScores[q.id];
-        row.push(v === undefined ? '' : v === null ? 'N' : String(v));
+        row.push(v === undefined ? '' : v === null ? 'N' : scoreCellText(v));
       });
       // spacer1 (N+2)
       row.push('');
@@ -487,6 +501,14 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
       activeObs
     );
     hotInstances.push(hot);
+
+    // Center the grid (and its heading) when it is narrower than the modal.
+    const tableWidth = section.querySelector('.ht_master .htCore')?.offsetWidth ?? 0;
+    if (tableWidth > 0) {
+      section.style.maxWidth = `${tableWidth + 2}px`;
+      section.style.marginInline = 'auto';
+      hot.refreshDimensions();
+    }
   }
 }
 
@@ -519,7 +541,7 @@ export function recomputeRow(gridData, exam, rowIdx, O = 0) {
       questionScores[q.id] = null;
       return;
     }
-    const n = Number(raw);
+    const n = parseScoreNum(raw);
     questionScores[q.id] = isNaN(n) ? raw : n;
   });
 
@@ -610,6 +632,14 @@ export function recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O = 0) {
   sdRow[N + 4 + TOFF] = sdGrade !== null ? sdGrade.toFixed(1).replace('.', ',') : '';
 }
 
+// Scores may be typed with a decimal comma or point; the grid shows a comma.
+function parseScoreNum(v) {
+  return Number(String(v).trim().replace(',', '.'));
+}
+function scoreCellText(v) {
+  return String(v).replace('.', ',');
+}
+
 /**
  * How typed input is shown in the grid (`cell`) and stored (`value`):
  * empty → removed, N → null (not evaluated), valid number → number,
@@ -619,9 +649,9 @@ function normalizeScore(input, q) {
   const raw = String(input ?? '').trim();
   if (raw === '') return { cell: '', value: undefined };
   if (raw.toUpperCase() === 'N') return { cell: 'N', value: null };
-  const num = Number(raw);
+  const num = parseScoreNum(raw);
   if (isNaN(num) || num < 0 || num > q.max_points) return { cell: raw, value: raw };
-  return { cell: String(num), value: num };
+  return { cell: scoreCellText(num), value: num };
 }
 
 export function createGroupHOT(container, exam, students, gridData, year, obsArr = []) {
@@ -704,7 +734,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     };
     exam.questions.forEach((q, qi) => {
       const v = examScores[q.id];
-      setCell(2 + qi, v === undefined ? '' : v === null ? 'N' : String(v));
+      setCell(2 + qi, v === undefined ? '' : v === null ? 'N' : scoreCellText(v));
     });
     obsArr.forEach((o, oi) => setCell(obsStart + oi, obsIds.includes(o.id)));
     if (!changed) return;
@@ -823,7 +853,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       filled++;
       const upper = String(val).toUpperCase().trim();
       if (upper === 'N') continue;
-      const num = Number(val);
+      const num = parseScoreNum(val);
       if (isNaN(num) || num < 0 || num > q.max_points) invalid = true;
     }
     if (invalid) return 'invalid';
@@ -954,7 +984,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       return;
     }
 
-    const num = Number(value);
+    const num = parseScoreNum(value);
     if (isNaN(num) || num < 0 || num > q.max_points) {
       TD.style.background = '#ff0033';
       TD.style.color = '#fff';
@@ -1239,7 +1269,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
             gridData[row][col] = 'N';
             await saveCell(row, col, () => Store.setScore(student.id, exam.id, q.id, null, year));
           } else {
-            const num = Number(raw);
+            const num = parseScoreNum(raw);
             if (isNaN(num) || num < 0 || num > q.max_points) {
               gridData[row][col] = raw;
               await saveCell(row, col, () => Store.setScore(student.id, exam.id, q.id, raw, year));
@@ -1247,7 +1277,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
                 `Ongeldige score "${raw}" voor vraag ${q.section}${q.number} (max ${q.max_points}). Controleer en herstel.`
               );
             } else {
-              gridData[row][col] = String(num);
+              gridData[row][col] = scoreCellText(num);
               await saveCell(row, col, () => Store.setScore(student.id, exam.id, q.id, num, year));
             }
           }
@@ -1288,10 +1318,12 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       if (row >= summaryIdx) return;
       const isEditing = hot.getActiveEditor()?.isOpened?.() ?? false;
 
-      // ── Numpad dot → write N directly into the question cell ───────────
-      if (event.code === 'NumpadDecimal' && !isEditing && isQCol(col)) {
+      // ── Numpad dot → write N directly into the question cell (also while
+      // typing, which discards the typed value) ──────────────────────────
+      if (event.code === 'NumpadDecimal' && numpadDotIsN && isQCol(col)) {
         event.stopImmediatePropagation();
         event.preventDefault();
+        if (isEditing) hot.getActiveEditor().cancelChanges();
         hot.setDataAtCell(row, col, 'N');
         return;
       }

@@ -187,9 +187,7 @@ export async function openGroupStudentsModal(groupId, year) {
               const badgeCell =
                 `<td style="text-align:left;vertical-align:top;padding:3px 1px 3px 2px;width:30px;${rowBg};${borderR}">` +
                 (badgeLetter
-                  ? `<span title="${(fromExam.description ?? '').trim()}" style="display:inline-flex;align-items:center;justify-content:center;` +
-                    `width:16px;height:16px;border-radius:50%;background:var(--primary);` +
-                    `color:#fff;font-size:8px;font-weight:700;line-height:1;cursor:default">${badgeLetter}</span>`
+                  ? `<span class="attempt-badge" title="${(fromExam.description ?? '').trim()}">${badgeLetter}</span>`
                   : '') +
                 `</td>`;
               return (

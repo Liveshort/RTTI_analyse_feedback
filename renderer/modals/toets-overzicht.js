@@ -1,4 +1,4 @@
-import { lerpColor } from '../utils/colors.js';
+import { lerpColor, gradeColor, rttiPctColor } from '../utils/colors.js';
 import {
   gradeGroupIdx,
   gradeChartColor,
@@ -16,6 +16,7 @@ import {
   modalRefresher,
 } from '../app.js';
 import { openExamModal } from './toets-edit.js';
+import { examGroups, groupStudentsOf } from '../screens/scores.js';
 
 const GROUP_PALETTE = [
   '#4A90D9',
@@ -33,7 +34,7 @@ export async function openExamOverviewModal(
   year,
   scoreOverride = null,
   isSummary = false,
-  initialTab = 'cijferverdeling'
+  initialTab = 'resultaten'
 ) {
   const all = await Store.getExams(year);
   const exam = all.find((e) => e.id === examId);
@@ -62,6 +63,8 @@ export async function openExamOverviewModal(
   for (const o of examObsObjects) {
     obsAccum[o.id] = { count: 0, byGroup: {}, byGradeGroup: Array(6).fill(0) };
   }
+  // studentData[studentId] = { examScores, studentObs, overrideEntry } for the Resultaten tab
+  const studentData = new Map();
 
   for (const s of students) {
     const rec = await Store.getStudentScores(s.id, year);
@@ -73,6 +76,7 @@ export async function openExamOverviewModal(
     // Track observations even if no scores
     const studentObs = rec?.observations?.[exam.id] ?? [];
     const grpForObs = studentGroupMap.get(String(s.id));
+    studentData.set(String(s.id), { examScores, studentObs, overrideEntry });
     if (!examScores || Object.keys(examScores).length === 0) {
       for (const obsId of studentObs) {
         if (!obsAccum[obsId]) continue;
@@ -190,13 +194,106 @@ export async function openExamOverviewModal(
     return html;
   }
 
+  // ── Resultaten tab: one table per group, students ordered like the score grid ──
+  function resultatenHtml() {
+    const fmtNum = (v) => String(v).replace('.', ',');
+    const resObs = [...examObsObjects].sort((a, b) => a.naam.localeCompare(b.naam, 'nl'));
+    // Fixed column widths, so every group's table lines up; Naam takes the rest.
+    // The badge column (best attempt was a resit) only exists in the resit summary.
+    const COL_W = { totaal: 85, cijfer: 50, badge: 26, obs: 32, rtti: 50 };
+    const cols = [
+      COL_W.totaal,
+      COL_W.cijfer,
+      ...(isSummary ? [COL_W.badge] : []),
+      ...resObs.map(() => COL_W.obs),
+      ...RTTI_CATS.map(() => COL_W.rtti),
+    ];
+    const colgroup = `<colgroup><col />${cols.map((w) => `<col style="width:${w}px" />`).join('')}</colgroup>`;
+    const tableMinWidth = 200 + cols.reduce((a, b) => a + b, 0);
+    const studentRow = (s) => {
+      const d = studentData.get(String(s.id)) ?? {};
+      const scores = d.examScores ?? {};
+      const evalExam = d.overrideEntry?.exam ?? exam;
+      const qs = {};
+      evalExam.questions.forEach((q) => {
+        if (scores[q.id] !== undefined) qs[q.id] = scores[q.id];
+      });
+      const res = Object.keys(qs).length > 0 ? Store.calcResults(evalExam, qs) : null;
+      const grade = d.overrideEntry?.grade ?? res?.grade ?? null;
+
+      const totaal = res
+        ? `${fmtNum(res.scored)} / ${res.normalMax}${res.hasBonus && res.scored > res.normalMax ? ' (+)' : ''}`
+        : '';
+      const gradeTxt = grade !== null ? formatGrade(grade) : '';
+      // Same badge as the Groepen overview: first letter of the resit's description.
+      const attempt = d.overrideEntry?.exam;
+      const badgeCell = !isSummary
+        ? ''
+        : attempt?.parent_id
+          ? (() => {
+              const desc = (attempt.description ?? '').trim();
+              const letter = desc.charAt(0).toUpperCase() || '?';
+              return `<td><span class="attempt-badge" title="${escHtml(desc)}">${escHtml(letter)}</span></td>`;
+            })()
+          : '<td></td>';
+
+      const obsCells = resObs
+        .map((o, i) => {
+          const marked = (d.studentObs ?? []).includes(o.id);
+          return `<td class="${i === 0 ? 'res-sep' : ''}"${marked ? ` title="${escHtml(o.naam)}"` : ''}>${marked ? escHtml(o.icon) : ''}</td>`;
+        })
+        .join('');
+
+      const rttiCells = RTTI_CATS.map((cat, i) => {
+        const v = res?.[cat];
+        const text = v == null ? '' : v === 'NVT' ? 'NVT' : `${v}%`;
+        const bg = rttiPctColor(text);
+        return `<td class="${i === 0 ? 'res-sep' : ''}"${bg ? ` style="background:${bg}"` : ''}>${text}</td>`;
+      }).join('');
+
+      const gbg = gradeColor(gradeTxt);
+      return (
+        `<tr><td class="res-name">${escHtml(Store.fullName(s))}</td>` +
+        `<td class="res-sep">${totaal}</td>` +
+        `<td class="res-grade"${gbg ? ` style="background:${gbg}"` : ''}>${gradeTxt}</td>${badgeCell}` +
+        `${obsCells}${rttiCells}</tr>`
+      );
+    };
+
+    const head =
+      `<tr><th class="res-name">Naam</th>` +
+      `<th class="res-sep">Totaal</th><th>Cijfer</th>${isSummary ? '<th></th>' : ''}` +
+      resObs
+        .map(
+          (o, i) =>
+            `<th class="${i === 0 ? 'res-sep' : ''}" title="${escHtml(o.naam)}">${escHtml(o.icon)}</th>`
+        )
+        .join('') +
+      RTTI_CATS.map((c, i) => `<th class="${i === 0 ? 'res-sep' : ''}">${c}%</th>`).join('') +
+      `</tr>`;
+
+    const sections = examGroups(exam, year)
+      .map((g) => {
+        const gStudents = groupStudentsOf(g, students);
+        if (gStudents.length === 0) return '';
+        return (
+          `<h3 class="group-heading">${escHtml(g.name)}</h3>` +
+          `<div class="results-table-wrap"><table class="results-table" style="min-width:${tableMinWidth}px">${colgroup}<thead>${head}</thead>` +
+          `<tbody>${gStudents.map(studentRow).join('')}</tbody></table></div>`
+        );
+      })
+      .join('');
+    return sections || '<p class="hint">Geen groepen gevonden voor deze toets.</p>';
+  }
+
   showModal(
     `<h3>Overzicht: <em>${escHtml(exam.title)}</em>
       <span style="font-weight:normal;font-size:13px;font-style:normal"> — Jaarlaag ${escHtml(String(exam.jaarlaag))}, ${escHtml(year)}</span>
     </h3>
     <div style="margin-bottom:10px">${summaryHtml}</div>
     <div class="overview-tab-bar">
-      <button class="overview-tab selected" data-tab="cijferverdeling">Cijferverdeling</button>
+      <button class="overview-tab selected" data-tab="resultaten">Resultaten</button>
+      <button class="overview-tab" data-tab="cijferverdeling">Cijferverdeling</button>
       <button class="overview-tab" data-tab="boxplots">Boxplot cijfers</button>
       <button class="overview-tab" data-tab="vraaganalyse"${isSummary ? ' disabled title="Dit tabblad is alleen beschikbaar voor individuele toetsen, niet voor het verzameloverzicht."' : ''}>Vraaganalyse</button>
       <button class="overview-tab" data-tab="rtti-analyse"${isSummary ? ' disabled title="Dit tabblad is alleen beschikbaar voor individuele toetsen, niet voor het verzameloverzicht."' : ''}>RTTI-analyse</button>
@@ -204,7 +301,11 @@ export async function openExamOverviewModal(
     </div>
     <div style="margin:0 -28px -28px;padding:16px 28px 28px;background:var(--bg)">
 
-    <div class="tab-pane" id="tab-cijferverdeling">
+    <div class="tab-pane" id="tab-resultaten">
+      ${resultatenHtml()}
+    </div>
+
+    <div class="tab-pane hidden" id="tab-cijferverdeling">
       ${
         hasGrades
           ? `
@@ -1128,7 +1229,7 @@ export async function openExamOverviewModal(
       }
 
       // ── Tab switching ─────────────────────────────────────────────────────
-      const tabInited = new Set(['cijferverdeling']);
+      const tabInited = new Set(['resultaten']);
       function switchTab(name) {
         el.querySelectorAll('.overview-tab').forEach((b) =>
           b.classList.toggle('selected', b.dataset.tab === name)
@@ -1138,7 +1239,8 @@ export async function openExamOverviewModal(
         );
         if (!tabInited.has(name)) {
           tabInited.add(name);
-          if (name === 'boxplots') initBoxplots();
+          if (name === 'cijferverdeling') initCijferverdeling();
+          else if (name === 'boxplots') initBoxplots();
           else if (name === 'vraaganalyse') initVraaganalyse();
           else if (name === 'rtti-analyse') initRttiAnalyse();
           else if (name === 'observaties') initObservaties();
@@ -1148,15 +1250,14 @@ export async function openExamOverviewModal(
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
       });
 
-      initCijferverdeling();
-      if (initialTab !== 'cijferverdeling') switchTab(initialTab);
+      if (initialTab !== 'resultaten') switchTab(initialTab);
 
       // Background changes: new scores or edits of this exam refresh the
       // overview silently on the same tab. (The resit summary is computed by
       // the caller, so it is not refreshed.)
       if (!scoreOverride) {
         const currentTab = () =>
-          el.querySelector('.overview-tab.selected')?.dataset.tab ?? 'cijferverdeling';
+          el.querySelector('.overview-tab.selected')?.dataset.tab ?? 'resultaten';
         const refresh = modalRefresher(() =>
           openExamOverviewModal(examId, year, null, isSummary, currentTab())
         );

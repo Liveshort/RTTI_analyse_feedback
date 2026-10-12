@@ -86,7 +86,7 @@ export async function openExamModal(existingId, afterSave = null) {
         </div>
         <div class="form-group spinner-wrap-sm" style="margin-bottom:0">
           <label>Weging</label>
-          <div class="num-spinner" id="f-eweging" data-val="1" data-step="0.5" data-min="0" data-max="10">
+          <div class="num-spinner" id="f-eweging" data-val="1" data-step="0.5" data-min="0" data-max="100">
             <button type="button" class="spin-btn spin-minus">−</button>
             <input class="spin-val" value="1" />
             <button type="button" class="spin-btn spin-plus">+</button>
@@ -94,7 +94,7 @@ export async function openExamModal(existingId, afterSave = null) {
         </div>
         <div class="form-group spinner-wrap-sm" style="margin-bottom:0">
           <label>Weging SE</label>
-          <div class="num-spinner" id="f-eweging-se" data-val="1" data-step="0.5" data-min="0" data-max="10">
+          <div class="num-spinner" id="f-eweging-se" data-val="1" data-step="0.5" data-min="0" data-max="100">
             <button type="button" class="spin-btn spin-minus">−</button>
             <input class="spin-val" value="1" />
             <button type="button" class="spin-btn spin-plus">+</button>
@@ -425,16 +425,16 @@ export function showExamEditor(
         <label>Weging</label>
         ${
           lockTopFields
-            ? `<div style="cursor:not-allowed" title="Deze toetseigenschap kan alleen worden aangepast bij de verzamelkaart, voor alle toetsen tegelijkertijd."><div class="num-spinner spinner-disabled" id="f-eweging2" data-val="${exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="10"><button type="button" class="spin-btn spin-minus" disabled>−</button><input class="spin-val" value="${String(exam.weging ?? 1).replace('.', ',')}" readonly /><button type="button" class="spin-btn spin-plus" disabled>+</button></div></div>`
-            : `<div class="num-spinner" id="f-eweging2" data-val="${exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="10"><button type="button" class="spin-btn spin-minus">−</button><input class="spin-val" value="${String(exam.weging ?? 1).replace('.', ',')}" /><button type="button" class="spin-btn spin-plus">+</button></div>`
+            ? `<div style="cursor:not-allowed" title="Deze toetseigenschap kan alleen worden aangepast bij de verzamelkaart, voor alle toetsen tegelijkertijd."><div class="num-spinner spinner-disabled" id="f-eweging2" data-val="${exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="100"><button type="button" class="spin-btn spin-minus" disabled>−</button><input class="spin-val" value="${String(exam.weging ?? 1).replace('.', ',')}" readonly /><button type="button" class="spin-btn spin-plus" disabled>+</button></div></div>`
+            : `<div class="num-spinner" id="f-eweging2" data-val="${exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="100"><button type="button" class="spin-btn spin-minus">−</button><input class="spin-val" value="${String(exam.weging ?? 1).replace('.', ',')}" /><button type="button" class="spin-btn spin-plus">+</button></div>`
         }
       </div>
       <div class="form-group spinner-wrap-sm" style="margin-bottom:0">
         <label>Weging SE</label>
         ${
           lockTopFields
-            ? `<div style="cursor:not-allowed" title="Deze toetseigenschap kan alleen worden aangepast bij de verzamelkaart, voor alle toetsen tegelijkertijd."><div class="num-spinner spinner-disabled" id="f-eweging-se2" data-val="${exam.weging_se ?? exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="10"><button type="button" class="spin-btn spin-minus" disabled>−</button><input class="spin-val" value="${String(exam.weging_se ?? exam.weging ?? 1).replace('.', ',')}" readonly /><button type="button" class="spin-btn spin-plus" disabled>+</button></div></div>`
-            : `<div class="num-spinner" id="f-eweging-se2" data-val="${exam.weging_se ?? exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="10"><button type="button" class="spin-btn spin-minus">−</button><input class="spin-val" value="${String(exam.weging_se ?? exam.weging ?? 1).replace('.', ',')}" /><button type="button" class="spin-btn spin-plus">+</button></div>`
+            ? `<div style="cursor:not-allowed" title="Deze toetseigenschap kan alleen worden aangepast bij de verzamelkaart, voor alle toetsen tegelijkertijd."><div class="num-spinner spinner-disabled" id="f-eweging-se2" data-val="${exam.weging_se ?? exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="100"><button type="button" class="spin-btn spin-minus" disabled>−</button><input class="spin-val" value="${String(exam.weging_se ?? exam.weging ?? 1).replace('.', ',')}" readonly /><button type="button" class="spin-btn spin-plus" disabled>+</button></div></div>`
+            : `<div class="num-spinner" id="f-eweging-se2" data-val="${exam.weging_se ?? exam.weging ?? 1}" data-step="0.5" data-min="0" data-max="100"><button type="button" class="spin-btn spin-minus">−</button><input class="spin-val" value="${String(exam.weging_se ?? exam.weging ?? 1).replace('.', ',')}" /><button type="button" class="spin-btn spin-plus">+</button></div>`
         }
       </div>
       <div class="form-group spinner-wrap-sm" style="margin-bottom:0">

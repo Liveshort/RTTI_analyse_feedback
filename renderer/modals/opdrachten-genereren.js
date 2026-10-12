@@ -30,7 +30,7 @@ export async function openOpdrachtenGenererenModal(examId, year) {
     savedJson: null, // coupling as last saved (or loaded), to detect changes
     showAll: false,
     excluded: new Set(), // student ids unticked for this run
-    includeAnswers: false,
+    includeAnswers: true,
     assignments: null, // result of Store.getOpdrachtAssignments
     busy: false,
   };
@@ -59,7 +59,7 @@ export async function openOpdrachtenGenererenModal(examId, year) {
        </div>
        <div class="og-footer">
          <label class="og-inline-check">
-           <input type="checkbox" data-action="og-answers" /> Antwoorden meegeven
+           <input type="checkbox" data-action="og-answers" checked /> Antwoorden meegeven
          </label>
          <span class="og-summary muted"></span>
          <button type="button" class="btn-secondary" data-action="og-key">Antwoordsleutel</button>

@@ -182,7 +182,7 @@ export async function openSummaryEditModal(parentId, year) {
       </div>
       <div class="form-group spinner-wrap-sm" style="margin-bottom:0">
         <label>Weging</label>
-        <div class="num-spinner" id="f-sum-weging" data-val="${parent.weging ?? 1}" data-step="0.5" data-min="0" data-max="10">
+        <div class="num-spinner" id="f-sum-weging" data-val="${parent.weging ?? 1}" data-step="0.5" data-min="0" data-max="100">
           <button type="button" class="spin-btn spin-minus">−</button>
           <input class="spin-val" value="${String(parent.weging ?? 1).replace('.', ',')}" />
           <button type="button" class="spin-btn spin-plus">+</button>
@@ -190,7 +190,7 @@ export async function openSummaryEditModal(parentId, year) {
       </div>
       <div class="form-group spinner-wrap-sm" style="margin-bottom:0">
         <label>Weging SE</label>
-        <div class="num-spinner${isPta ? '' : ' spinner-disabled'}" id="f-sum-weging-se" data-val="${parent.weging_se ?? parent.weging ?? 1}" data-step="0.5" data-min="0" data-max="10">
+        <div class="num-spinner${isPta ? '' : ' spinner-disabled'}" id="f-sum-weging-se" data-val="${parent.weging_se ?? parent.weging ?? 1}" data-step="0.5" data-min="0" data-max="100">
           <button type="button" class="spin-btn spin-minus"${isPta ? '' : ' disabled'}>−</button>
           <input class="spin-val" value="${String(parent.weging_se ?? parent.weging ?? 1).replace('.', ',')}" />
           <button type="button" class="spin-btn spin-plus"${isPta ? '' : ' disabled'}>+</button>
