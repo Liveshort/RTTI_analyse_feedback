@@ -9,7 +9,7 @@ import {
   changedByName,
   modalRefresher,
 } from '../app.js';
-import { lerpColor, examTypeColor } from '../utils/colors.js';
+import { lerpColor, examTypeColor, isFail } from '../utils/colors.js';
 import { gradeTextColor, gradeBorderColor } from '../utils/grades.js';
 import { openProfielModal } from './profiel.js';
 
@@ -179,7 +179,7 @@ export async function openGroupStudentsModal(groupId, year) {
               const label = g !== null ? formatGrade(g) : '—';
               const bc = gradeBorderColor(g);
               const tc = gradeTextColor(g);
-              const fw = g !== null && g < 5.5 ? 'bold' : '500';
+              const fw = g !== null && isFail(g) ? 'bold' : '500';
               const borderR = fi === families.length - 1 ? 'border-right:1px solid #e0e0e0' : '';
               const badgeLetter = fromExam?.parent_id
                 ? (fromExam.description ?? '').trim().charAt(0).toUpperCase() || '?'
@@ -213,14 +213,14 @@ export async function openGroupStudentsModal(groupId, year) {
         `<td style="text-align:center;padding:3px 4px;width:70px;border-left:2px solid var(--border);${rowBg}">${
           yearAvg !== null
             ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(yearAvg)};
-              border-radius:4px;font-size:12px;font-weight:${yearAvg < 5.5 ? 'bold' : '500'};color:${gradeTextColor(yearAvg)}"
+              border-radius:4px;font-size:12px;font-weight:${isFail(yearAvg) ? 'bold' : '500'};color:${gradeTextColor(yearAvg)}"
             >${formatGrade(yearAvg)}</span>`
             : `<span style="color:#aaa">—</span>`
         }</td>` +
         `<td style="text-align:center;padding:3px 4px;width:70px;${rowBg}">${
           dossierAvg !== null
             ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(dossierAvg)};
-              border-radius:4px;font-size:12px;font-weight:${dossierAvg < 5.5 ? 'bold' : '500'};color:${gradeTextColor(dossierAvg)}"
+              border-radius:4px;font-size:12px;font-weight:${isFail(dossierAvg) ? 'bold' : '500'};color:${gradeTextColor(dossierAvg)}"
             >${formatGrade(dossierAvg)}</span>`
             : `<span style="color:#aaa">—</span>`
         }</td>`;
@@ -241,7 +241,7 @@ export async function openGroupStudentsModal(groupId, year) {
           const label = avg !== null ? formatGrade(avg) : '—';
           const bc = gradeBorderColor(avg);
           const tc = gradeTextColor(avg);
-          const fw = avg !== null && avg < 5.5 ? 'bold' : '500';
+          const fw = avg !== null && isFail(avg) ? 'bold' : '500';
           const borderR = fi === families.length - 1 ? 'border-right:1px solid #e0e0e0' : '';
           return (
             `<td style="text-align:right;padding:3px 4px;background:#f0f4ff">` +
@@ -273,13 +273,13 @@ export async function openGroupStudentsModal(groupId, year) {
     `<td style="text-align:center;padding:3px 4px;background:#f0f4ff;border-left:2px solid var(--border)">${
       yearAvgOfAvgs !== null
         ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(yearAvgOfAvgs)};` +
-          `border-radius:4px;font-size:12px;font-weight:${yearAvgOfAvgs < 5.5 ? 'bold' : '500'};color:${gradeTextColor(yearAvgOfAvgs)}">${formatGrade(yearAvgOfAvgs)}</span>`
+          `border-radius:4px;font-size:12px;font-weight:${isFail(yearAvgOfAvgs) ? 'bold' : '500'};color:${gradeTextColor(yearAvgOfAvgs)}">${formatGrade(yearAvgOfAvgs)}</span>`
         : `<span style="color:#aaa">—</span>`
     }</td>` +
     `<td style="text-align:center;padding:3px 4px;background:#f0f4ff">${
       seAvgOfAvgs !== null
         ? `<span style="display:inline-block;min-width:34px;padding:1px 5px;border:2px solid ${gradeBorderColor(seAvgOfAvgs)};` +
-          `border-radius:4px;font-size:12px;font-weight:${seAvgOfAvgs < 5.5 ? 'bold' : '500'};color:${gradeTextColor(seAvgOfAvgs)}">${formatGrade(seAvgOfAvgs)}</span>`
+          `border-radius:4px;font-size:12px;font-weight:${isFail(seAvgOfAvgs) ? 'bold' : '500'};color:${gradeTextColor(seAvgOfAvgs)}">${formatGrade(seAvgOfAvgs)}</span>`
         : `<span style="color:#aaa">—</span>`
     }</td>`;
 

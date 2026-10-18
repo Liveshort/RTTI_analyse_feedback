@@ -1,4 +1,5 @@
 import { ICONS } from '../utils/icons.js';
+import { isFail } from '../utils/colors.js';
 import {
   escHtml,
   SEL,
@@ -265,7 +266,7 @@ async function calcGroupGradeStats(group, year) {
     yearAvgs.length < 2
       ? 0
       : Math.sqrt(yearAvgs.reduce((s, v) => s + (v - mean) ** 2, 0) / yearAvgs.length);
-  const fails = Math.round((yearAvgs.filter((g) => g < 5.5).length / yearAvgs.length) * 100);
+  const fails = Math.round((yearAvgs.filter((g) => isFail(g)).length / yearAvgs.length) * 100);
 
   return { mean, sd, fails };
 }

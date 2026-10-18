@@ -41,7 +41,9 @@
       align(center, txt)
     }
   )
-  set text(font: "Libertinus Serif", size: 10pt)
+  // Fonts ship in include/fonts (passed to Typst with --font-path).
+  set text(font: "Source Serif 4", size: 10.5pt)
+  show math.equation: set text(font: "STIX Two Math")
   set heading(numbering: none)
   show heading.where(level: 1): it => block(
     below: 4pt,

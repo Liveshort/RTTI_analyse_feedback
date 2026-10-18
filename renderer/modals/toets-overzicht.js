@@ -1,4 +1,4 @@
-import { lerpColor, gradeColor, rttiPctColor } from '../utils/colors.js';
+import { lerpColor, gradeColor, rttiPctColor, isFail } from '../utils/colors.js';
 import {
   gradeGroupIdx,
   gradeChartColor,
@@ -170,8 +170,8 @@ export async function openExamOverviewModal(
       grades.length < 2
         ? 0
         : Math.sqrt(grades.reduce((s, v) => s + (v - mean) ** 2, 0) / grades.length);
-    const fails = Math.round((grades.filter((g) => g < 5.5).length / grades.length) * 100);
-    const dotColor = mean < 5.5 ? '#e57373' : lerpColor('#ffd54f', '#66bb6a', (mean - 5.5) / 4.5);
+    const fails = Math.round((grades.filter((g) => isFail(g)).length / grades.length) * 100);
+    const dotColor = isFail(mean) ? '#e57373' : lerpColor('#ffd54f', '#66bb6a', (mean - 5.5) / 4.5);
     const dot = `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:middle;margin:0 3px;flex-shrink:0"><circle cx="5" cy="5" r="5" fill="${dotColor}"/></svg>`;
     summaryHtml = `<span class="muted" style="display:flex;align-items:center;flex-wrap:wrap;gap:0">${grades.length} leerlingen &nbsp;·&nbsp; ${dot} ${mean.toFixed(1).replace('.', ',')} ± ${sd.toFixed(1).replace('.', ',')} &nbsp;·&nbsp; ${fails}% onvoldoende</span>`;
   }
@@ -1271,6 +1271,6 @@ export async function openExamOverviewModal(
         });
       }
     },
-    true
+    'modal-overview'
   );
 }

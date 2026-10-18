@@ -141,7 +141,7 @@ export async function openScoreModal(examId, year, deps) {
 
   showModal(
     `
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;padding-right:30px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;padding-right:30px;flex-shrink:0">
       <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0;font-size:17px;font-weight:600">
         <span style="white-space:nowrap">Scores invoeren voor</span>
         ${
@@ -156,7 +156,7 @@ export async function openScoreModal(examId, year, deps) {
         <button class="btn-secondary" id="sc-undo" title="Ongedaan maken (Ctrl+Z)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B6;</button>
         <button class="btn-secondary" id="sc-redo" title="Opnieuw (Ctrl+Y)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B7;</button>
         <button class="btn-secondary" id="sc-help" disabled
-          title="Navigeer sneller door gebruik te maken van de numpad:&#10;0-9: Punten invullen&#10;Punt (.): N invullen (als '. → N' aangevinkt is)&#10;Enter: Bevestigen &amp; volgende veld&#10;/ of *: Vorige / volgende veld&#10;- of +: Vorige / volgende leerling"
+          title="Navigeer sneller door gebruik te maken van de numpad:&#10;0-9: Punten invullen&#10;Punt (.): N invullen (als '. → N' aangevinkt is)&#10;Enter: Bevestigen &amp; volgende veld&#10;/ of *: Vorige / volgende veld&#10;- of +: Vorige / volgende leerling&#10;F1, F2, …: Eerste, tweede, … observatie aan/uit voor de huidige leerling"
           style="cursor:default;color:#9aa0ab;border-color:#d0d6df;">Help ?</button>
         <label class="sc-dot-toggle"
           title="Als deze checkbox aangevinkt is, wordt de Numpad '.' een sneltoets voor &quot;Niet gemaakt&quot;. Je kunt dan geen halve punten meer invoeren met alleen het numpad.">
@@ -174,7 +174,7 @@ export async function openScoreModal(examId, year, deps) {
         </div>
       </div>
     </div>
-    <div id="sc-grid-container" style="overflow-x:auto"></div>
+    <div id="sc-grid-container"></div>
   `,
     async (el) => {
       wireSpinners(el);
@@ -817,7 +817,8 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     O > 0
       ? [
           ...obsArr.map(
-            (o) => `<span class="hdr-obs" title="${escHtml(o.naam)}">${escHtml(o.icon)}</span>`
+            (o, oi) =>
+              `<span class="hdr-obs" title="${escHtml(o.naam)}${oi < 12 ? ` (F${oi + 1})` : ''}">${escHtml(o.icon)}</span>`
           ),
           '', // spacer2 header
         ]
@@ -876,6 +877,29 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     const alpha = onRow && onCol ? 0.16 : 0.08;
     // backgroundImage overlays on top of the background color already set
     TD.style.backgroundImage = `linear-gradient(rgba(74,144,217,${alpha}), rgba(74,144,217,${alpha}))`;
+  }
+
+  // ── Observations ──────────────────────────────────────────────────────────
+  // Check or uncheck observation obsIdx for the student on `row`: undoable and
+  // saved at once. Used by the checkboxes, the 0/1 keys and F1, F2, ….
+  function setObs(row, obsIdx, checked) {
+    const col = obsStart + obsIdx;
+    const obs = obsArr[obsIdx];
+    const student = students[row];
+    if (!obs || !student) return;
+    const prevVal = gridData[row][col] === true;
+    const apply = async (val) => {
+      gridData[row][col] = val;
+      hotInstances.forEach((h) => h.render());
+      await saveCell(row, col, () => Store.setObservation(student.id, exam.id, obs.id, val, year));
+    };
+    pushHistory({
+      undo: () =>
+        gridData[row][col] === checked ? apply(prevVal) : changedInBackground('ongedaan gemaakt'),
+      redo: () =>
+        gridData[row][col] === prevVal ? apply(checked) : changedInBackground('opnieuw uitgevoerd'),
+    });
+    return apply(checked);
   }
 
   // ── Custom renderers ──────────────────────────────────────────────────────
@@ -1020,90 +1044,19 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     cb.type = 'checkbox';
     cb.checked = value === true;
     cb.style.cssText = 'cursor:pointer;width:14px;height:14px;margin:0';
-    cb.addEventListener('mousedown', async (e) => {
-      const alreadySelected = selectedCell.row === row && selectedCell.col === col;
-
-      if (alreadySelected) {
-        // Cell is already focused: let the native click/change flow handle the toggle.
-        // Just stop HOT from interfering.
-        e.stopPropagation();
-        return;
-      }
-
-      // Cell was not yet selected: HOT's afterSelection will trigger a re-render
-      // that destroys this element before click/change can fire, so we must toggle
-      // manually here and prevent the native toggle from also firing.
+    cb.addEventListener('mousedown', (e) => {
+      // Stop HOT from interfering with the checkbox.
       e.stopPropagation();
+      // Cell already focused: let the native click/change flow handle the toggle.
+      if (selectedCell.row === row && selectedCell.col === col) return;
+      // Cell not yet selected: HOT's afterSelection re-renders and destroys this
+      // element before click/change can fire, so toggle here and prevent the
+      // native toggle.
       e.preventDefault();
-
-      const obsColStart = N + 3;
-      const obsIdx = col - obsColStart;
-      const obs = obsArr[obsIdx];
-      const student = students[row];
-      if (!obs || !student) return;
-
-      const newChecked = !cb.checked;
-      const prevVal = cb.checked;
-
-      cb.checked = newChecked;
-      gridData[row][col] = newChecked;
-
-      pushHistory({
-        undo: async () => {
-          if (gridData[row][col] !== newChecked) return changedInBackground('ongedaan gemaakt');
-          gridData[row][col] = prevVal;
-          await saveCell(row, col, () =>
-            Store.setObservation(student.id, exam.id, obs.id, prevVal, year)
-          );
-          hotInstances.forEach((h) => h.render());
-        },
-        redo: async () => {
-          if (gridData[row][col] !== prevVal) return changedInBackground('opnieuw uitgevoerd');
-          gridData[row][col] = newChecked;
-          await saveCell(row, col, () =>
-            Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
-          );
-          hotInstances.forEach((h) => h.render());
-        },
-      });
-
-      hot.selectCell(row, col); // triggers afterSelection → render
-      await saveCell(row, col, () =>
-        Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
-      );
+      setObs(row, col - obsStart, !cb.checked);
+      hot.selectCell(row, col);
     });
-    cb.addEventListener('change', async () => {
-      // Handles the case where the cell was already selected (native toggle path).
-      const obsColStart = N + 3;
-      const obsIdx = col - obsColStart;
-      const obs = obsArr[obsIdx];
-      const student = students[row];
-      if (!obs || !student) return;
-      const newChecked = cb.checked;
-      const prevVal = !newChecked;
-      gridData[row][col] = newChecked;
-      pushHistory({
-        undo: async () => {
-          if (gridData[row][col] !== newChecked) return changedInBackground('ongedaan gemaakt');
-          gridData[row][col] = prevVal;
-          await saveCell(row, col, () =>
-            Store.setObservation(student.id, exam.id, obs.id, prevVal, year)
-          );
-          hotInstances.forEach((h) => h.render());
-        },
-        redo: async () => {
-          if (gridData[row][col] !== prevVal) return changedInBackground('opnieuw uitgevoerd');
-          gridData[row][col] = newChecked;
-          await saveCell(row, col, () =>
-            Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
-          );
-          hotInstances.forEach((h) => h.render());
-        },
-      });
-      await saveCell(row, col, () =>
-        Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
-      );
-    });
+    cb.addEventListener('change', () => setObs(row, col - obsStart, cb.checked));
     TD.appendChild(cb);
     applyHighlight(TD, row, col);
   }
@@ -1409,47 +1362,19 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       if (isObsCol(col) && !isEditing && (event.key === '0' || event.key === '1')) {
         event.stopImmediatePropagation();
         event.preventDefault();
-        const newChecked = event.key === '1';
-        const obsIdx = col - firstObsCol;
-        const obs = obsArr[obsIdx];
-        const student = students[row];
-        if (obs && student) {
-          const prevVal = gridData[row][col] === true;
-          gridData[row][col] = newChecked;
-          pushHistory({
-            undo: async () => {
-              if (gridData[row][col] !== newChecked) {
-                return changedInBackground('ongedaan gemaakt');
-              }
-              gridData[row][col] = prevVal;
-              await saveCell(row, col, () =>
-                Store.setObservation(student.id, exam.id, obs.id, prevVal, year)
-              );
-              hotInstances.forEach((h) => h.render());
-            },
-            redo: async () => {
-              if (gridData[row][col] !== prevVal) {
-                return changedInBackground('opnieuw uitgevoerd');
-              }
-              gridData[row][col] = newChecked;
-              await saveCell(row, col, () =>
-                Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
-              );
-              hotInstances.forEach((h) => h.render());
-            },
-          });
-          saveCell(row, col, () =>
-            Store.setObservation(student.id, exam.id, obs.id, newChecked, year)
-          ).then(() => hot.render());
-        }
-        // Advance: next obs → next obs, last obs + not last student → next row first Q,
-        // last obs + last student → stay (nothing to advance to)
-        // if (col < lastObsCol) {
-        //   goTo(row, col + 1);
-        // } else if (row < lastDataRow) {
-        //   goTo(row + 1, firstQCol);
-        // }
-        // else: last obs of last student — value is saved above, cursor stays
+        setObs(row, col - firstObsCol, event.key === '1');
+        return;
+      }
+
+      // ── F1, F2, … → toggle observation 1, 2, … of this student, without
+      // moving the selection or closing an open editor ──────────────────────
+      const fKey = /^F(\d{1,2})$/.exec(event.key);
+      if (fKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        const obsIdx = Number(fKey[1]) - 1;
+        if (obsIdx >= O) return;
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        setObs(row, obsIdx, gridData[row][obsStart + obsIdx] !== true);
         return;
       }
     },

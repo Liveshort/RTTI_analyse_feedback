@@ -8,6 +8,9 @@ import {
   getJaarlagFilter,
   getJaarlagKlasFilter,
   getEigenOnly,
+  confirmDialog,
+  guardModalClose,
+  formSnapshot,
 } from '../app.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -183,7 +186,8 @@ export function renderObservaties() {
 }
 
 export async function deleteObs(id) {
-  if (!confirm('Observatie verwijderen?')) return;
+  if (!(await confirmDialog('Observatie verwijderen?', { okLabel: 'Verwijderen', danger: true })))
+    return;
   await Store.deleteObservation(id);
   toast('Observatie verwijderd.', 'info');
   renderObservaties();
@@ -374,6 +378,9 @@ export async function openObsModal(existingId) {
         toast('Observatie opgeslagen.', 'success');
         renderObservaties();
       });
+
+      const initialForm = formSnapshot(el);
+      guardModalClose(() => formSnapshot(el) !== initialForm);
     }
   );
 }

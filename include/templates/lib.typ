@@ -9,9 +9,9 @@
 #let _render_block(bg, title_color, title_str, it) = {
   let n = context counter(figure.where(kind: it.kind)).display()
   let title_text = if it.caption != none {
-    text(fill: title_color, weight: "extrabold")[#title_str #n (#it.caption.body)]
+    text(fill: title_color, weight: "bold")[#title_str #n (#it.caption.body)]
   } else {
-    text(fill: title_color, weight: "extrabold")[#title_str #n]
+    text(fill: title_color, weight: "bold")[#title_str #n]
   }
   align(left, block(
     width: 100%,
@@ -31,7 +31,12 @@
 // ── Document setup ─────────────────────────────────────────────────────────────
 #let setup(body) = {
   set page(margin: 1.5cm)
-  set text(font: "Libertinus Serif", size: 11pt, lang: "nl")
+  // Fonts ship in include/fonts (passed to Typst with --font-path).
+  set text(font: "Source Serif 4", size: 10.5pt, lang: "nl")
+  show math.equation: set text(font: "STIX Two Math")
+  show figure.caption: set text(size: 9.5pt)
+  // Table captions go above the table (other figures keep theirs below).
+  show figure.where(kind: table): set figure.caption(position: top)
   set par(justify: true)
   set heading(numbering: none)
   show heading.where(level: 1): it => block(
@@ -126,7 +131,7 @@
   #set align(left)
   #set block(spacing: 0.65em)
   #set par(spacing: 0.65em)
-  #text(fill: rgb("#ac0000"), weight: "extrabold")[Belangrijk!]
+  #text(fill: rgb("#ac0000"), weight: "bold")[Belangrijk!]
 
   #body
 ])

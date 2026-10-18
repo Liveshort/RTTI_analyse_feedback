@@ -894,10 +894,12 @@ function wrapWithFunction(editorView, fn) {
   editorView.focus();
 }
 
+// Labels in the document (<naam>; Typst allows letters, digits, _ - : and . in
+// them, e.g. <eq:energie>), without the internal <__rtti_…> markers.
 function extractLabels(editorView) {
   const doc = editorView.state.doc.toString();
-  const matches = [...doc.matchAll(/<([a-zA-Z0-9_-]+)>/g)];
-  return [...new Set(matches.map((m) => m[1]))];
+  const matches = [...doc.matchAll(/<([\p{L}\p{N}_][\p{L}\p{N}_:.-]*)>/gu)];
+  return [...new Set(matches.map((m) => m[1]))].filter((l) => !l.startsWith('__'));
 }
 
 // ── Popup management ──────────────────────────────────────────────────────────
@@ -1050,7 +1052,7 @@ function buildReferencePanel(popupEl) {
   render(labels);
   search.addEventListener('input', () => {
     const q = search.value.toLowerCase();
-    render(q ? labels.filter((l) => l.includes(q)) : labels);
+    render(q ? labels.filter((l) => l.toLowerCase().includes(q)) : labels);
   });
 }
 
@@ -1069,7 +1071,7 @@ function genTable(cols, rows) {
     rowLines.push('  ' + cells + ',');
   }
   return [
-    '#table(',
+    'table(',
     `  columns: (1fr,) * ${cols},`,
     '  align: center,',
     '  fill: (x, y) => if calc.odd(y) { luma(240) } else { white },',
@@ -1189,9 +1191,15 @@ function figureLabel(name) {
 }
 
 function insertFigure(file, name) {
+  insertCaptioned(`image("${file}", width: 80%)`, figureLabel(name));
+}
+
+// Insert #figure(body, caption: […]) <label> at the cursor, with the
+// placeholder caption selected so it can be typed over.
+function insertCaptioned(body, label) {
   const snippet = withIndent(
     view,
-    `#figure(\n  image("${file}", width: 80%),\n  caption: [${FIGURE_CAPTION}],\n) <${figureLabel(name)}>`
+    `#figure(\n  ${body.replace(/\n/g, '\n  ')},\n  caption: [${FIGURE_CAPTION}],\n) <${label}>`
   );
   const { from, to } = view.state.selection.main;
   const at = from + snippet.indexOf(FIGURE_CAPTION);
@@ -1478,7 +1486,8 @@ function buildTablePicker(popupEl) {
         updateHighlight();
       });
       cell.addEventListener('click', () => {
-        if (view) insertAtCursor(view, withIndent(view, genTable(hoverCol + 1, hoverRow + 1)));
+        // Tables go in a figure, so they get a (numbered, referable) caption.
+        if (view) insertCaptioned(genTable(hoverCol + 1, hoverRow + 1), figureLabel('tabel'));
         closeActivePopup();
       });
       grid.appendChild(cell);

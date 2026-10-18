@@ -33,11 +33,17 @@ export function stdDevGradeColor(sdStr) {
   return lerpColor('#fff3cd', '#f8d7da', (t - 0.5) * 2);
 }
 
+// A grade is a fail when it rounds (to one decimal, as it is entered in the
+// school's grade system) below 5.5: a 5.47 becomes a 5.5, which is a pass.
+export function isFail(g) {
+  return Math.round(g * 10) / 10 < 5.5;
+}
+
 export function gradeColor(gradeStr) {
   if (!gradeStr || gradeStr === '—') return null;
   const n = parseFloat(String(gradeStr).replace(',', '.'));
   if (isNaN(n)) return null;
-  if (n < 5.5) return '#f8d7da';
+  if (isFail(n)) return '#f8d7da';
   return lerpColor('#fff3cd', '#c3e6cb', (n - 5.5) / 4.5);
 }
 

@@ -9,6 +9,9 @@ import {
   onModalSync,
   showReloadNotice,
   changedByName,
+  confirmDialog,
+  guardModalClose,
+  formSnapshot,
 } from '../app.js';
 import { SEC_ROMAN, SEC_ALPHA2, renderToetsen } from '../screens/toetsen.js';
 
@@ -211,6 +214,9 @@ export async function openExamModal(existingId, afterSave = null) {
           { value: 'seq', label: '1, 2, 3, … (Volgnummer)' },
         ]);
         structSel.setValue('roman');
+
+        const initialForm = formSnapshot(el);
+        guardModalClose(() => formSnapshot(el) !== initialForm);
 
         el.querySelector('#f-e-next').addEventListener('click', () => {
           const title = el.querySelector('#f-etitle').value.trim();
@@ -630,24 +636,22 @@ export function showExamEditor(
 
       const deselectedObs = new Set();
       el.querySelectorAll('.obs-sel-btn').forEach((btn) =>
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
           if (hasScores) {
             const wasSelected = btn.classList.contains('selected');
             if (wasSelected) {
-              if (
-                !confirm(
-                  'Weet je zeker dat je deze observatie wilt verwijderen uit de toets? Alle geregistreerde indicaties van deze observatie voor deze toets worden verwijderd.'
-                )
-              )
-                return;
+              const ok = await confirmDialog(
+                'Weet je zeker dat je deze observatie wilt verwijderen uit de toets? Alle geregistreerde indicaties van deze observatie voor deze toets worden verwijderd.',
+                { okLabel: 'Verwijderen', danger: true }
+              );
+              if (!ok) return;
               deselectedObs.add(btn.dataset.obsId);
             } else {
-              if (
-                !confirm(
-                  'Er zijn al scores ingevoerd voor deze toets. Een toegevoegde observatie kan achteraf niet meer worden verwijderd. Wil je doorgaan?'
-                )
-              )
-                return;
+              const ok = await confirmDialog(
+                'Er zijn al scores ingevoerd voor deze toets. Een toegevoegde observatie kan achteraf niet meer worden verwijderd. Wil je doorgaan?',
+                { okLabel: 'Doorgaan' }
+              );
+              if (!ok) return;
               deselectedObs.delete(btn.dataset.obsId);
             }
           }
@@ -658,9 +662,10 @@ export function showExamEditor(
       el.querySelector('#f-addq').addEventListener('click', async () => {
         if (
           hasScores &&
-          !confirm(
-            'Er zijn al scores ingevoerd voor deze toets. Een toegevoegde vraag kan achteraf niet meer worden verwijderd. Wil je doorgaan?'
-          )
+          !(await confirmDialog(
+            'Er zijn al scores ingevoerd voor deze toets. Een toegevoegde vraag kan achteraf niet meer worden verwijderd. Wil je doorgaan?',
+            { okLabel: 'Doorgaan' }
+          ))
         )
           return;
         const last = exam.questions[exam.questions.length - 1];
@@ -724,6 +729,10 @@ export function showExamEditor(
         else renderToetsen();
       });
       renderQRows();
+
+      // A new exam (step 2) is unsaved as a whole; an existing one once its form changed.
+      const initialForm = formSnapshot(el);
+      guardModalClose(() => !isEdit || formSnapshot(el) !== initialForm);
     },
     true
   );
@@ -742,7 +751,8 @@ export async function deleteExam(id) {
     );
     return;
   }
-  if (!confirm('Toets verwijderen?')) return;
+  if (!(await confirmDialog('Toets verwijderen?', { okLabel: 'Verwijderen', danger: true })))
+    return;
   await Store.deleteExam(id, toetsYear);
   toast('Toets verwijderd.', 'info');
   renderToetsen();

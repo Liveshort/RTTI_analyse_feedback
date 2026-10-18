@@ -1,4 +1,4 @@
-import { lerpColor } from '../utils/colors.js';
+import { lerpColor, isFail } from '../utils/colors.js';
 import { ICONS } from '../utils/icons.js';
 import {
   escHtml,
@@ -96,7 +96,7 @@ export async function computeExamStats(year, exam) {
     avgPts: mp.toFixed(1).replace('.', ','),
     avgG: mg.toFixed(1).replace('.', ','),
     sd: sd(grades, mg).toFixed(1).replace('.', ','),
-    fails: Math.round((grades.filter((g) => g < 5.5).length / grades.length) * 100),
+    fails: Math.round((grades.filter((g) => isFail(g)).length / grades.length) * 100),
     normalMax,
   };
 }
@@ -137,7 +137,7 @@ export async function computeBestGradeStats(parentId, year) {
     n: grades.length,
     avgG: mean.toFixed(1).replace('.', ','),
     sd: sd.toFixed(1).replace('.', ','),
-    fails: Math.round((grades.filter((g) => g < 5.5).length / grades.length) * 100),
+    fails: Math.round((grades.filter((g) => isFail(g)).length / grades.length) * 100),
   };
 }
 
@@ -404,7 +404,7 @@ export async function renderToetsenList() {
       return;
     }
     const gv = parseFloat(st.avgG.replace(',', '.'));
-    const circleColor = gv < 5.5 ? '#e57373' : lerpColor('#ffd54f', '#66bb6a', (gv - 5.5) / 4.5);
+    const circleColor = isFail(gv) ? '#e57373' : lerpColor('#ffd54f', '#66bb6a', (gv - 5.5) / 4.5);
     el.innerHTML =
       `<svg width="10" height="10" viewBox="0 0 10 10" style="vertical-align:middle;margin-right:5px;flex-shrink:0"><circle cx="5" cy="5" r="5" fill="${circleColor}"/></svg>` +
       `${st.avgG} ± ${st.sd} · ${st.fails}% onvoldoende`;

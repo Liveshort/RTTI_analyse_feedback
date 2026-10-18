@@ -495,6 +495,14 @@ function getTypstBinary() {
   return path.join(__dirname, 'bin', 'typst', platformDir, archDir, exe);
 }
 
+// Fonts used by the templates (Source Serif 4, STIX Two Math) ship in include/fonts.
+function getFontsDir() {
+  return path.join(path.dirname(getTemplatesDir()), 'fonts');
+}
+
+// Start of every `typst compile` command line.
+const typstCompileArgs = () => ['compile', '--font-path', getFontsDir()];
+
 // Smoke-test: returns { success, version } or { success: false, error }
 ipcMain.handle('typst:version', () => {
   const bin = getTypstBinary();
@@ -512,7 +520,7 @@ ipcMain.handle('typst:version', () => {
 ipcMain.handle('typst:compile', (_event, typFilePath, outputPdfPath) => {
   const bin = getTypstBinary();
   return new Promise((resolve) => {
-    execFile(bin, ['compile', typFilePath, outputPdfPath], (err, _stdout, stderr) => {
+    execFile(bin, [...typstCompileArgs(), typFilePath, outputPdfPath], (err, _stdout, stderr) => {
       if (err) resolve({ success: false, error: stderr || err.message });
       else resolve({ success: true, outputPdfPath });
     });
@@ -567,13 +575,17 @@ ipcMain.handle('app:renderRapportPdf', (_event, _examId, students, examInfo) => 
   fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
 
   return new Promise((resolve) => {
-    execFile(bin, ['compile', '--root', appDir, wrapperPath, outputPdf], (err, _stdout, stderr) => {
-      try {
-        fs.unlinkSync(wrapperPath);
-      } catch (_) {}
-      if (err) resolve({ success: false, error: stderr || err.message });
-      else resolve({ success: true, pdfPath: outputPdf });
-    });
+    execFile(
+      bin,
+      [...typstCompileArgs(), '--root', appDir, wrapperPath, outputPdf],
+      (err, _stdout, stderr) => {
+        try {
+          fs.unlinkSync(wrapperPath);
+        } catch (_) {}
+        if (err) resolve({ success: false, error: stderr || err.message });
+        else resolve({ success: true, pdfPath: outputPdf });
+      }
+    );
   });
 });
 
@@ -682,13 +694,17 @@ ipcMain.handle('app:renderAssignmentPdf', (_event, typFile, title) => {
   fs.writeFileSync(wrapperPath, wrapperContent, 'utf8');
 
   return new Promise((resolve) => {
-    execFile(bin, ['compile', '--root', appDir, wrapperPath, outputPdf], (err, _stdout, stderr) => {
-      try {
-        fs.unlinkSync(wrapperPath);
-      } catch (_) {}
-      if (err) resolve({ success: false, error: stderr || err.message });
-      else resolve({ success: true, pdfPath: outputPdf });
-    });
+    execFile(
+      bin,
+      [...typstCompileArgs(), '--root', appDir, wrapperPath, outputPdf],
+      (err, _stdout, stderr) => {
+        try {
+          fs.unlinkSync(wrapperPath);
+        } catch (_) {}
+        if (err) resolve({ success: false, error: stderr || err.message });
+        else resolve({ success: true, pdfPath: outputPdf });
+      }
+    );
   });
 });
 
@@ -743,7 +759,7 @@ ipcMain.handle('app:renderAssignmentSvg', (_event, typFile, title, previewConten
   return new Promise((resolve) => {
     execFile(
       bin,
-      ['compile', '--root', appDir, wrapperPath, outputPattern],
+      [...typstCompileArgs(), '--root', appDir, wrapperPath, outputPattern],
       { maxBuffer: 10 * 1024 * 1024 },
       (err, _stdout, stderr) => {
         tryUnlink(wrapperPath);
@@ -789,7 +805,7 @@ function compileTypst(bin, appDir, wrapperPath, outputPdf) {
   return new Promise((resolve) => {
     execFile(
       bin,
-      ['compile', '--root', appDir, wrapperPath, outputPdf],
+      [...typstCompileArgs(), '--root', appDir, wrapperPath, outputPdf],
       { maxBuffer: 10 * 1024 * 1024 },
       (err, _stdout, stderr) => resolve(err ? stderr || err.message : null)
     );

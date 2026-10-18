@@ -1187,31 +1187,58 @@ body::after {
   display: none;
 }
 
-/* Notice shown over an open modal when its data changed in the background */
-.reload-notice-backdrop {
+/* In-app dialogs (confirmDialog, showReloadNotice in app.js): centered card over
+   a dimmed backdrop, optional bold title, message, buttons right-aligned with
+   Annuleren (secondary) left of the action (primary, or solid red when destructive). */
+.app-dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10000;
 }
-.reload-notice {
+.app-dialog {
   background: var(--surface);
   border-radius: var(--radius);
   padding: 20px 24px;
-  max-width: 420px;
+  width: min(440px, 90vw);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 16px;
+  gap: 10px;
 }
-.reload-notice p {
+.app-dialog-title {
   margin: 0;
-  align-self: stretch;
+  font-size: 15px;
+  font-weight: 600;
+}
+.app-dialog p {
+  margin: 0;
   line-height: 1.5;
+  white-space: pre-line;
+}
+.app-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.app-dialog-actions .btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border: 1px solid var(--danger);
+  padding: 0 16px;
+  height: 32px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+.app-dialog-actions .btn-danger:hover {
+  filter: brightness(0.92);
+  background: var(--danger);
 }
 
 /* Background notices (e.g. a colleague added an exam), top right, stay until clicked */
@@ -1340,9 +1367,32 @@ body::after {
 #modal-box.modal-xl {
   width: 960px;
 }
+/* Exam overview: anchored to the top, so its tabs stay in place when switching
+   between tabs of different heights. */
+#modal-box.modal-overview {
+  width: 960px;
+  align-self: flex-start;
+  margin-top: 5vh;
+  max-height: 90vh;
+}
 #modal-box.modal-scores {
   width: min(95vw, 1600px);
   max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Only the grids scroll, so the header bar (title, buttons, N-term) stays in view. */
+#modal-box.modal-scores #modal-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#modal-box.modal-scores #sc-grid-container {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 #modal-box.modal-profile {
   width: 92vw;

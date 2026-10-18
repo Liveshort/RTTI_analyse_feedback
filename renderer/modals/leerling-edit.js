@@ -7,6 +7,7 @@ import {
   overlayElement,
   onModalSync,
   showReloadNotice,
+  confirmDialog,
 } from '../app.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
 import {
@@ -183,7 +184,8 @@ export function openStudentModal(id) {
 }
 
 export async function deleteStudent(id) {
-  if (!confirm('Leerling verwijderen?')) return;
+  if (!(await confirmDialog('Leerling verwijderen?', { okLabel: 'Verwijderen', danger: true })))
+    return;
   await Store.deleteStudent(id, leerlingenState.year);
   toast('Leerling verwijderd.', 'info');
   renderStudentList();

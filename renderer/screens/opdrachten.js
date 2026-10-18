@@ -9,6 +9,7 @@ import {
   getObservatieFilter,
   setObservatieFilterOptions,
   openEditor,
+  confirmDialog,
 } from '../app.js';
 import { ICONS } from '../utils/icons.js';
 
@@ -147,7 +148,11 @@ async function copyOpdracht(btn, id) {
 }
 
 async function deleteOpdracht(id) {
-  if (!confirm('Opdracht verwijderen? Dit verwijdert ook het bijbehorende Typst-bestand.')) return;
+  const ok = await confirmDialog(
+    'Opdracht verwijderen? Dit verwijdert ook het bijbehorende Typst-bestand.',
+    { okLabel: 'Verwijderen', danger: true }
+  );
+  if (!ok) return;
   await Store.deleteOpdracht(id);
   toast('Opdracht verwijderd.', 'info');
   renderOpdrachten();

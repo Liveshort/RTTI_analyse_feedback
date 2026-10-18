@@ -9,6 +9,7 @@ import {
   onModalSync,
   showReloadNotice,
   changedByName,
+  confirmDialog,
 } from '../app.js';
 import { parseCSV, askSchoolYear } from '../utils/csv.js';
 import { renderGroepen } from '../screens/groepen.js';
@@ -416,7 +417,8 @@ export async function openGroupModal(id) {
 }
 
 export async function deleteGroup(id) {
-  if (!confirm('Groep verwijderen?')) return;
+  if (!(await confirmDialog('Groep verwijderen?', { okLabel: 'Verwijderen', danger: true })))
+    return;
   const year = SEL.groupsYear.getValue() || Store.getConfigSync().activeYear;
   await Store.deleteGroup(id, year);
   toast('Groep verwijderd.', 'info');
