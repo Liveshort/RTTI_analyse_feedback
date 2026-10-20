@@ -5,7 +5,7 @@ Desktop app (Electron) for teachers to manage and analyse exam results using the
 (`nat`, `bio`, `schk`, `wi`) of a school, with all data shared between teachers through a OneDrive
 folder. The interface is in Dutch.
 
-Current version: **0.1.5**
+Current version: **0.1.6**
 
 ## Features
 
@@ -14,8 +14,9 @@ Current version: **0.1.5**
 - **Groepen** — groups per subject and year, CSV import of groups and group assignments.
 - **Toetsen** — exams with sections, questions, RTTI tags and max points; bonus and diagnostic
   questions; n-term; inhaal/herkansing attempts grouped under a summary card (best attempt counts).
-- **Scores invoeren** — Handsontable score grid with numpad navigation, `N` for not evaluated, and
-  per-question observations.
+- **Scores invoeren** — Handsontable score grid with numpad navigation, `N` for not evaluated,
+  per-question observations, and grades the teacher can overwrite (used everywhere, flagged when
+  the calculated grade changes later).
 - **Toetsoverzicht** — grade distribution, boxplots, question analysis, RTTI analysis and
   observations per exam.
 - **Rapport** — per-student PDF reports (Typst) with score table, RTTI breakdown, explanation and
@@ -23,7 +24,7 @@ Current version: **0.1.5**
 - **Observaties** — reusable observations (icon, explanation, leeradvies) per subject, jaarlaag and
   schoolsoort.
 - **Opdrachten** — remedial assignments written in Typst in a built-in editor with live preview,
-  linked to observations.
+  given to students per exam based on their observations or a grade below a chosen threshold.
 - **Gebruikers / School** (admin) — teacher accounts, subjects, colours and photos; school name,
   logo and watermark used in reports.
 - **Multi-teacher sync** — changes from colleagues are detected and hot-reloaded into open screens
@@ -57,8 +58,8 @@ The app opens with DevTools attached.
 npm run dist
 ```
 
-Produces a portable Windows x64 `.exe` in `dist/`. The bundled Typst binary and the report
-templates are copied alongside it as extra resources.
+Produces a portable Windows x64 `.exe` in `dist/`. The bundled Typst binary, the report
+templates, fonts and Typst packages are copied alongside it as extra resources.
 
 ---
 
@@ -71,6 +72,8 @@ rtti-app/
 ├── preload.js            — Secure IPC bridge (window.rtti)
 ├── bin/typst/            — Typst binaries per platform (only win/x86_64 is packaged)
 ├── include/templates/    — Typst templates: rtti_export.typ (rapport), lib.typ, base_assignment.typ
+├── include/fonts/        — Fonts for the Typst documents
+├── include/packages/     — Vendored Typst packages (zero), so compiling works offline
 └── renderer/
     ├── index.html        — App shell and navigation
     ├── app.js            — Entry point: navigation, modals, toasts, filters

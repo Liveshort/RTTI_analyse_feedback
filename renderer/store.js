@@ -610,6 +610,22 @@ const Store = (() => {
     });
   }
 
+  // Grade overwritten by the teacher: rec.overrides[examId] = { cijfer, berekend }.
+  // `berekend` is the calculated grade (rounded to one decimal, or null) when the
+  // override was set, so a later change of the calculated grade can be flagged.
+  // cijfer === null removes the override.
+  async function setGradeOverride(studentId, examId, cijfer, berekend, year) {
+    await updateStudentScores(studentId, year, _activeSubject, (rec) => {
+      if (cijfer === null) {
+        if (rec.overrides) delete rec.overrides[examId];
+        if (rec.overrides && !Object.keys(rec.overrides).length) delete rec.overrides;
+      } else {
+        rec.overrides ??= {};
+        rec.overrides[examId] = { cijfer, berekend: berekend ?? null };
+      }
+    });
+  }
+
   async function getStudentHistory(studentId, subject = _activeSubject) {
     const years = listYearsSync();
     const results = [];
@@ -617,10 +633,18 @@ const Store = (() => {
       await loadYear(year, subject);
       const exams = getExamsSync(year, subject);
       const record = await getStudentScores(studentId, year, subject);
-      for (const [examId, questionScores] of Object.entries(record.scores ?? {})) {
+      const examIds = new Set([
+        ...Object.keys(record.scores ?? {}),
+        ...Object.keys(record.overrides ?? {}),
+      ]);
+      for (const examId of examIds) {
         const exam = exams.find((e) => e.id === examId);
         if (!exam) continue;
-        results.push({ exam: { ...exam, academic_year: year }, questionScores });
+        results.push({
+          exam: { ...exam, academic_year: year },
+          questionScores: record.scores?.[examId] ?? {},
+          override: record.overrides?.[examId],
+        });
       }
     }
     results.sort((a, b) => {
@@ -631,7 +655,11 @@ const Store = (() => {
   }
 
   // ── RTTI calculations ─────────────────────────────────────────────────────
-  function calcResults(exam, questionScores) {
+  // `override` ({ cijfer, berekend }, from rec.overrides[exam.id]) replaces the
+  // grade; the RTTI percentages and points still come from the scores.
+  // Returns grade (the grade that counts), calculatedGrade, overridden and
+  // overrideStale (the calculated grade changed since the override was set).
+  function calcResults(exam, questionScores, override) {
     const n = exam.n_term ?? 1;
     const normalMax = exam.questions
       .filter((q) => qKind(q) === 'normal')
@@ -674,6 +702,11 @@ const Store = (() => {
       grade = scored >= normalMax ? 10 : calcGrade(scored, normalMax, n);
     }
 
+    const calculatedGrade = grade;
+    const overridden = typeof override?.cijfer === 'number';
+    if (overridden) grade = override.cijfer;
+    const round1 = (g) => (g === null || g === undefined ? null : Math.round(g * 10) / 10);
+
     const pct = (cat) =>
       cats[cat][1] > 0 ? Math.round((cats[cat][0] / cats[cat][1]) * 100) : 'NVT';
     return {
@@ -683,11 +716,28 @@ const Store = (() => {
       examMaxTotal,
       hasBonus: bonusMax > 0,
       grade,
+      calculatedGrade,
+      overridden,
+      overrideStale: overridden && round1(override.berekend) !== round1(calculatedGrade),
       R: pct('R'),
       T1: pct('T1'),
       T2: pct('T2'),
       I: pct('I'),
     };
+  }
+
+  // Results of one student (score record `rec`) for `exam`, override included;
+  // null when the student has neither scores nor an overwritten grade for it.
+  function examResults(rec, exam) {
+    const examScores = rec?.scores?.[exam.id] ?? {};
+    const qs = {};
+    exam.questions.forEach((q) => {
+      const v = examScores[q.id];
+      if (v !== undefined) qs[q.id] = v;
+    });
+    const override = rec?.overrides?.[exam.id];
+    if (!Object.keys(qs).length && !override) return null;
+    return calcResults(exam, qs, override);
   }
 
   function calcGrade(scored, max, nTerm) {
@@ -945,6 +995,7 @@ const Store = (() => {
     for (const s of students) {
       const rec = await getStudentScores(s.id, year, subject);
       const exScores = rec?.scores?.[examId];
+      if (rec?.overrides?.[examId]) return true;
       if (!exScores) continue;
       if (Object.values(exScores).some((v) => v !== null && v !== undefined)) return true;
     }
@@ -953,6 +1004,7 @@ const Store = (() => {
 
   async function studentHasScores(studentId, year, subject = _activeSubject) {
     const rec = await getStudentScores(studentId, year, subject);
+    if (Object.keys(rec.overrides ?? {}).length) return true;
     return Object.values(rec.scores ?? {}).some((exScores) =>
       Object.values(exScores ?? {}).some((v) => v !== null && v !== undefined)
     );
@@ -1001,18 +1053,21 @@ const Store = (() => {
       let bestGrade = -Infinity;
       let bestEntry = null;
       for (const attempt of allAttempts) {
-        const examScores = rec?.scores?.[attempt.id];
-        if (!examScores || Object.keys(examScores).length === 0) continue;
-        const qs = {};
-        attempt.questions.forEach((q) => {
-          const v = examScores[q.id];
-          if (v !== undefined) qs[q.id] = v;
-        });
-        if (Object.keys(qs).length === 0) continue;
-        const res = calcResults(attempt, qs);
-        if (res.grade !== null && res.grade > bestGrade) {
+        const res = examResults(rec, attempt);
+        if (res && res.grade !== null && res.grade > bestGrade) {
           bestGrade = res.grade;
-          bestEntry = { examId: attempt.id, exam: attempt, questionScores: qs, grade: res.grade };
+          const qs = {};
+          attempt.questions.forEach((q) => {
+            const v = rec.scores?.[attempt.id]?.[q.id];
+            if (v !== undefined) qs[q.id] = v;
+          });
+          bestEntry = {
+            examId: attempt.id,
+            exam: attempt,
+            questionScores: qs,
+            override: rec.overrides?.[attempt.id],
+            grade: res.grade,
+          };
         }
       }
       if (bestEntry) bestMap[s.id] = bestEntry;
@@ -1045,8 +1100,8 @@ const Store = (() => {
       let best = candidates[0];
       for (const c of candidates) {
         if (
-          (calcResults(c.exam, c.questionScores).grade ?? -1) >
-          (calcResults(best.exam, best.questionScores).grade ?? -1)
+          (calcResults(c.exam, c.questionScores, c.override).grade ?? -1) >
+          (calcResults(best.exam, best.questionScores, best.override).grade ?? -1)
         )
           best = c;
       }
@@ -1063,8 +1118,8 @@ const Store = (() => {
       let best = resitGroup[0];
       for (const c of resitGroup) {
         if (
-          (calcResults(c.exam, c.questionScores).grade ?? -1) >
-          (calcResults(best.exam, best.questionScores).grade ?? -1)
+          (calcResults(c.exam, c.questionScores, c.override).grade ?? -1) >
+          (calcResults(best.exam, best.questionScores, best.override).grade ?? -1)
         )
           best = c;
       }
@@ -1186,12 +1241,39 @@ const Store = (() => {
     return coupling;
   }
 
-  // Saves the coupling into the latest version of the exam on disk (like the
-  // N-term: one field, so other edits to the exam are never lost).
-  async function setExamOpdrachten(examId, coupling, year, subject = _activeSubject) {
+  // Grade cards of the exam: students whose grade on this exam (overwritten
+  // grade included, rounded to one decimal) is below `onder` get `opdrachten`.
+  // Saved as exam.opdrachtenCijfer: [{ id, onder, opdrachten: [opdrachtId] }].
+  function getOpdrachtCijferCards(exam) {
+    const exists = new Set(getOpdrachtenSync().map((o) => o.id));
+    return (exam.opdrachtenCijfer ?? []).map((c) => ({
+      ...c,
+      opdrachten: (c.opdrachten ?? []).filter((id) => exists.has(id)),
+    }));
+  }
+
+  // The reason shown for a grade card (chip in the modal, header of the opdracht).
+  function cijferCardReason(card) {
+    return {
+      icon: '5\uFE0F\u20E3',
+      naam: `Cijfer onder ${Number(card.onder).toFixed(1).replace('.', ',')}`,
+    };
+  }
+
+  // Saves the coupling (and the grade cards) into the latest version of the exam
+  // on disk (like the N-term: only these fields, so other edits are never lost).
+  async function setExamOpdrachten(
+    examId,
+    coupling,
+    year,
+    subject = _activeSubject,
+    cijferCards = []
+  ) {
     const saved = await update(ypExam(year, examId), (exam, onDisk) => {
       if (!onDisk) throw new Error(`Toets ${examId} bestaat niet meer.`);
       exam.opdrachten = coupling;
+      if (cijferCards.length) exam.opdrachtenCijfer = cijferCards;
+      else delete exam.opdrachtenCijfer;
       return stampMeta(exam, onDisk);
     });
     putCachedExam(`${year}/exams/${saved.subject ?? subject}`, saved);
@@ -1199,15 +1281,18 @@ const Store = (() => {
   }
 
   /**
-   * Who gets which opdracht for `exam`, given `coupling` ({ obsId: [opdrachtId] }).
+   * Who gets which opdracht for `exam`, given `coupling` ({ obsId: [opdrachtId] })
+   * and the grade cards `cijferCards` ([{ id, onder, opdrachten }]).
    * Returns {
-   *   students: [{ student, group, items: [{ opdracht, obs: [observatie, …] }] }]
+   *   students: [{ student, group, items: [{ opdracht, obs: [reason, …] }] }]
    *             — only students that receive something, sorted by group then name;
-   *   obsStudents: { [obsId]: [studentId, …] } — every student with that observatie.
+   *             a reason is an observatie or a grade card ({ icon, naam });
+   *   obsStudents: { [obsId]: [studentId, …] } — every student with that observatie;
+   *   cijferStudents: { [cardId]: [studentId, …] } — every student below that grade.
    * }
-   * An opdracht coupled to several observaties of one student is listed once.
+   * An opdracht coupled to several reasons of one student is listed once.
    */
-  async function getOpdrachtAssignments(exam, year, coupling) {
+  async function getOpdrachtAssignments(exam, year, coupling, cijferCards = []) {
     const subject = exam.subject ?? _activeSubject;
     await Promise.all([
       loadYear(year, subject),
@@ -1221,18 +1306,31 @@ const Store = (() => {
     const examObs = exam.obs_ids ?? [];
 
     const obsStudents = Object.fromEntries(examObs.map((id) => [id, []]));
+    const cijferStudents = Object.fromEntries(cijferCards.map((c) => [c.id, []]));
     const students = [];
     for (const s of getStudentsSync(year)) {
       const rec = await getStudentScores(s.id, year, subject);
       const own = new Set(rec?.observations?.[exam.id] ?? []);
       const items = new Map(); // opdrachtId -> { opdracht, obs }
+      const give = (opIds, reason) => {
+        for (const opId of opIds ?? []) {
+          if (!opById[opId]) continue;
+          if (!items.has(opId)) items.set(opId, { opdracht: opById[opId], obs: [] });
+          items.get(opId).obs.push(reason);
+        }
+      };
       for (const obsId of examObs) {
         if (!own.has(obsId)) continue;
         obsStudents[obsId].push(s.id);
-        for (const opId of coupling[obsId] ?? []) {
-          if (!opById[opId] || !obsById[obsId]) continue;
-          if (!items.has(opId)) items.set(opId, { opdracht: opById[opId], obs: [] });
-          items.get(opId).obs.push(obsById[obsId]);
+        if (obsById[obsId]) give(coupling[obsId], obsById[obsId]);
+      }
+      const grade = cijferCards.length ? examResults(rec, exam)?.grade : null;
+      if (grade !== null && grade !== undefined) {
+        const rounded = Math.round(grade * 10) / 10;
+        for (const card of cijferCards) {
+          if (!(rounded < card.onder)) continue;
+          cijferStudents[card.id].push(s.id);
+          give(card.opdrachten, cijferCardReason(card));
         }
       }
       if (!items.size) continue;
@@ -1251,7 +1349,7 @@ const Store = (() => {
         cmp(a.student.voornaam, b.student.voornaam) ||
         cmp(fullName(a.student), fullName(b.student))
     );
-    return { students, obsStudents };
+    return { students, obsStudents, cijferStudents };
   }
 
   // ── External changes (other teachers, reported by the watcher in main.js) ──
@@ -1463,7 +1561,9 @@ const Store = (() => {
     setScore,
     getStudentHistory,
     calcResults,
+    examResults,
     calcGrade,
+    setGradeOverride,
     makeExamId,
     makeGroupId,
     getObservaties,
@@ -1486,6 +1586,8 @@ const Store = (() => {
     deleteOpdracht,
     opdrachtMatchesExam,
     getOpdrachtCoupling,
+    getOpdrachtCijferCards,
+    cijferCardReason,
     setExamOpdrachten,
     getOpdrachtAssignments,
   };

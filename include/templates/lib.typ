@@ -1,6 +1,10 @@
 // lib.typ — shared helpers for opdracht templates.
 // Copied to data/opdrachten/lib.typ on startup (always overwritten — edit here, not there).
 
+// Number/unit formatting, available in every opdracht via `#import "lib.typ": *`.
+// The package is bundled in include/packages (passed to Typst with --package-path).
+#import "@preview/zero:0.7.1": quan, num, set-num
+
 // ── Shared block renderer — called from setup's show rules ─────────────────────
 // Blocks use the default block spacing above and below (same as paragraphs), so
 // the gap before and after a block is equal. Don't set `below` on them.
@@ -53,6 +57,8 @@
   show figure.where(kind: "opgave"):    it => _render_block(luma(240), luma(80), "Opgave", it)
   // Exercises can be long: let them (unlike other figures) break across pages.
   show figure.where(kind: "opgave"): set block(breakable: true)
+  // set-num updates a state, so it must be placed in the document itself.
+  set-num(decimal-separator: ",")
   body
 }
 

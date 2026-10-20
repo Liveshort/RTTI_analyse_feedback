@@ -71,18 +71,11 @@ export async function computeExamStats(year, exam) {
     points = [];
   for (const s of students) {
     const rec = await Store.getStudentScores(s.id, year);
-    const examScores = rec?.scores?.[exam.id];
-    if (!examScores || Object.keys(examScores).length === 0) continue;
-    const qs = {};
-    exam.questions.forEach((q) => {
-      const v = examScores[q.id];
-      if (v !== undefined) qs[q.id] = v;
-    });
-    if (Object.keys(qs).length === 0) continue;
-    const res = Store.calcResults(exam, qs);
-    if (res.grade !== null) {
+    const res = Store.examResults(rec, exam);
+    if (res && res.grade !== null) {
       grades.push(res.grade);
-      points.push(res.scored);
+      // Only an overwritten grade, no scores: no points to average
+      if (Object.keys(rec.scores?.[exam.id] ?? {}).length) points.push(res.scored);
     }
   }
   if (grades.length === 0) return null;
@@ -93,7 +86,7 @@ export async function computeExamStats(year, exam) {
     mp = mean(points);
   return {
     n: grades.length,
-    avgPts: mp.toFixed(1).replace('.', ','),
+    avgPts: points.length ? mp.toFixed(1).replace('.', ',') : '—',
     avgG: mg.toFixed(1).replace('.', ','),
     sd: sd(grades, mg).toFixed(1).replace('.', ','),
     fails: Math.round((grades.filter((g) => isFail(g)).length / grades.length) * 100),

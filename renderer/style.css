@@ -1476,6 +1476,29 @@ body::after {
 .og-obs-name {
   font-weight: 600;
 }
+.og-obs-head > .muted {
+  margin-left: auto;
+}
+.og-cijfer-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.og-cijfer-input {
+  width: 3.5em;
+  padding: 2px 6px;
+  text-align: center;
+  font-weight: 600;
+}
+.og-cijfer-remove {
+  color: var(--muted);
+}
+.og-cijfer-remove:hover {
+  color: var(--danger);
+}
+.og-cijfer-add {
+  margin-bottom: 14px;
+}
 .og-op-item {
   flex-wrap: wrap;
   column-gap: 8px;
@@ -2892,4 +2915,22 @@ code {
   line-height: 1;
   vertical-align: middle;
   cursor: default;
+}
+
+/* Grade overwritten by the teacher (score modal, exam overview Resultaten) */
+.handsontable td.grade-override,
+td.grade-override {
+  box-shadow: inset 0 0 0 3px #1f5fbf;
+}
+td.grade-override-stale {
+  position: relative;
+}
+td.grade-override-stale::after {
+  content: '⚠';
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  font-size: 9px;
+  line-height: 1;
+  color: #b35900;
 }

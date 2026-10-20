@@ -63,21 +63,23 @@ export async function openExamOverviewModal(
   for (const o of examObsObjects) {
     obsAccum[o.id] = { count: 0, byGroup: {}, byGradeGroup: Array(6).fill(0) };
   }
-  // studentData[studentId] = { examScores, studentObs, overrideEntry } for the Resultaten tab
+  // studentData[studentId] = { examScores, studentObs, overrideEntry, gradeOverride }
+  // for the Resultaten tab (gradeOverride: grade overwritten by the teacher)
   const studentData = new Map();
 
   for (const s of students) {
     const rec = await Store.getStudentScores(s.id, year);
     const overrideEntry = scoreOverride ? (scoreOverride[s.id] ?? null) : null;
     // overrideEntry may be { questionScores, exam, grade } (from computeBestGradeMap)
-    const examScores = overrideEntry
+    let examScores = overrideEntry
       ? (overrideEntry.questionScores ?? overrideEntry)
       : rec?.scores?.[exam.id];
+    const gradeOverride = overrideEntry ? overrideEntry.override : rec?.overrides?.[exam.id];
     // Track observations even if no scores
     const studentObs = rec?.observations?.[exam.id] ?? [];
     const grpForObs = studentGroupMap.get(String(s.id));
-    studentData.set(String(s.id), { examScores, studentObs, overrideEntry });
-    if (!examScores || Object.keys(examScores).length === 0) {
+    studentData.set(String(s.id), { examScores, studentObs, overrideEntry, gradeOverride });
+    if ((!examScores || Object.keys(examScores).length === 0) && !gradeOverride) {
       for (const obsId of studentObs) {
         if (!obsAccum[obsId]) continue;
         obsAccum[obsId].count++;
@@ -86,6 +88,7 @@ export async function openExamOverviewModal(
       }
       continue;
     }
+    examScores ??= {};
 
     const qs = {};
     exam.questions.forEach((q) => {
@@ -95,9 +98,9 @@ export async function openExamOverviewModal(
     // Use pre-computed grade from bestMap if available (correct attempt structure),
     // otherwise compute against this exam's structure.
     let grade = overrideEntry?.grade ?? null;
-    if (grade === null && Object.keys(qs).length > 0) {
+    if (grade === null && (Object.keys(qs).length > 0 || gradeOverride)) {
       const evalExam = overrideEntry?.exam ?? exam;
-      const res = Store.calcResults(evalExam, qs);
+      const res = Store.calcResults(evalExam, qs, gradeOverride);
       if (res.grade !== null) grade = res.grade;
     }
     if (grade !== null) {
@@ -218,10 +221,12 @@ export async function openExamOverviewModal(
       evalExam.questions.forEach((q) => {
         if (scores[q.id] !== undefined) qs[q.id] = scores[q.id];
       });
-      const res = Object.keys(qs).length > 0 ? Store.calcResults(evalExam, qs) : null;
+      const hasScores = Object.keys(qs).length > 0;
+      const res =
+        hasScores || d.gradeOverride ? Store.calcResults(evalExam, qs, d.gradeOverride) : null;
       const grade = d.overrideEntry?.grade ?? res?.grade ?? null;
 
-      const totaal = res
+      const totaal = hasScores
         ? `${fmtNum(res.scored)} / ${res.normalMax}${res.hasBonus && res.scored > res.normalMax ? ' (+)' : ''}`
         : '';
       const gradeTxt = grade !== null ? formatGrade(grade) : '';
@@ -245,17 +250,23 @@ export async function openExamOverviewModal(
         .join('');
 
       const rttiCells = RTTI_CATS.map((cat, i) => {
-        const v = res?.[cat];
+        const v = hasScores ? res[cat] : null;
         const text = v == null ? '' : v === 'NVT' ? 'NVT' : `${v}%`;
         const bg = rttiPctColor(text);
         return `<td class="${i === 0 ? 'res-sep' : ''}"${bg ? ` style="background:${bg}"` : ''}>${text}</td>`;
       }).join('');
 
       const gbg = gradeColor(gradeTxt);
+      const overridden = !!res?.overridden;
+      const gradeTitle = overridden
+        ? `Met de hand overschreven cijfer. Berekend cijfer: ${formatGrade(res.calculatedGrade)}.` +
+          (res.overrideStale ? '\nHet berekende cijfer is gewijzigd sinds het overschrijven.' : '')
+        : '';
+      const gradeClass = `res-grade${overridden ? ' grade-override' : ''}${res?.overrideStale ? ' grade-override-stale' : ''}`;
       return (
         `<tr><td class="res-name">${escHtml(Store.fullName(s))}</td>` +
         `<td class="res-sep">${totaal}</td>` +
-        `<td class="res-grade"${gbg ? ` style="background:${gbg}"` : ''}>${gradeTxt}</td>${badgeCell}` +
+        `<td class="${gradeClass}"${gbg ? ` style="background:${gbg}"` : ''}${gradeTitle ? ` title="${escHtml(gradeTitle)}"` : ''}>${gradeTxt}</td>${badgeCell}` +
         `${obsCells}${rttiCells}</tr>`
       );
     };

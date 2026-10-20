@@ -70,16 +70,16 @@ export async function openProfielModal(
     return;
   }
 
-  const results = history.map(({ exam, questionScores }) => ({
+  const results = history.map(({ exam, questionScores, override }) => ({
     exam,
-    res: Store.calcResults(exam, questionScores),
+    res: Store.calcResults(exam, questionScores, override),
     questionScores,
   }));
   // All attempts (including resits) where the student actually has a grade — used for per-attempt graphs
   const allResults = rawHistory
-    .map(({ exam, questionScores }) => ({
+    .map(({ exam, questionScores, override }) => ({
       exam,
-      res: Store.calcResults(exam, questionScores),
+      res: Store.calcResults(exam, questionScores, override),
       questionScores,
     }))
     .filter((r) => r.res.grade !== null);
@@ -635,7 +635,7 @@ export async function openProfielModal(
 
                 // Helper: weighted average for a student's results in one year.
                 // Groups original exams with their resits; only the best grade per group counts once.
-                function yearAvg(examList, scoreMap) {
+                function yearAvg(examList, rec) {
                   const resitsByParent = {};
                   examList
                     .filter((e) => e.parent_id)
@@ -649,14 +649,8 @@ export async function openProfielModal(
                     const group = [e, ...(resitsByParent[e.id] ?? [])];
                     let bestGrade = null;
                     for (const attempt of group) {
-                      const examScores = scoreMap[attempt.id];
-                      if (!examScores || Object.keys(examScores).length === 0) continue;
-                      const qs = {};
-                      attempt.questions.forEach((q) => {
-                        const v = examScores[q.id];
-                        if (v !== undefined) qs[q.id] = v;
-                      });
-                      const res = Store.calcResults(attempt, qs);
+                      const res = Store.examResults(rec, attempt);
+                      if (!res) continue;
                       if (res.grade !== null && (bestGrade === null || res.grade > bestGrade))
                         bestGrade = res.grade;
                     }
@@ -672,9 +666,9 @@ export async function openProfielModal(
                 function ptaAvg(hist) {
                   let sumW = 0,
                     sumWG = 0;
-                  for (const { exam, questionScores } of hist) {
+                  for (const { exam, questionScores, override } of hist) {
                     if (exam.type !== 'pta') continue;
-                    const res = Store.calcResults(exam, questionScores);
+                    const res = Store.calcResults(exam, questionScores, override);
                     if (res.grade === null) continue;
                     const w = Number(exam.weging_se ?? exam.weging ?? 1);
                     sumW += w;
@@ -688,7 +682,7 @@ export async function openProfielModal(
                 for (const yr of allYears) {
                   const examsInYear = Store.getExamsSync(yr);
                   const rec = await Store.getStudentScores(studentId, yr);
-                  studentYearAvgs[yr] = yearAvg(examsInYear, rec?.scores ?? {});
+                  studentYearAvgs[yr] = yearAvg(examsInYear, rec);
                 }
                 const studentPtaAvg = ptaAvg(history);
 
@@ -714,7 +708,7 @@ export async function openProfielModal(
                       continue;
                     }
                     const rec = await Store.getStudentScores(s.id, yr);
-                    const avg = yearAvg(examsInYear, rec?.scores ?? {});
+                    const avg = yearAvg(examsInYear, rec);
                     if (avg !== null) peerAvgs.push(avg);
                   }
                   jlYearAvgs[yr] =

@@ -5,6 +5,7 @@
 //              uitleg_rtti: (R, T1, T2, I: string))
 // student_data : array of (
 //   name, student_nr, group, score, max_score, grade, grade_num (float or none),
+//   grade_overridden (bool: grade overwritten by the teacher),
 //   vragen: array of (
 //     label, rtti, rtti_color, score (or none), max,
 //     class_avg, class_pct, dot_color
@@ -648,6 +649,7 @@
     #v(8pt)
 
     Je hebt #student.score / #student.max_score punten behaald en had dus #calc.round(student.score / student.max_score * 100)% goed. De N-term is N=#str(exam_info.n_term).replace(".", ","). Je cijfer is een *#student.grade*.
+    #if student.at("grade_overridden", default: false) [Dit cijfer is met de hand overschreven door de docent.]
 
     #v(4pt)
     ]

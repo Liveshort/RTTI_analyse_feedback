@@ -500,8 +500,20 @@ function getFontsDir() {
   return path.join(path.dirname(getTemplatesDir()), 'fonts');
 }
 
+// Typst packages used by the templates (e.g. @preview/zero) ship in
+// include/packages, so compiling never needs internet access.
+function getPackagesDir() {
+  return path.join(path.dirname(getTemplatesDir()), 'packages');
+}
+
 // Start of every `typst compile` command line.
-const typstCompileArgs = () => ['compile', '--font-path', getFontsDir()];
+const typstCompileArgs = () => [
+  'compile',
+  '--font-path',
+  getFontsDir(),
+  '--package-path',
+  getPackagesDir(),
+];
 
 // Smoke-test: returns { success, version } or { success: false, error }
 ipcMain.handle('typst:version', () => {

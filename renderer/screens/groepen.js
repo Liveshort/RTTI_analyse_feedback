@@ -220,20 +220,12 @@ async function calcGroupGradeStats(group, year) {
   await Promise.all(
     students.map(async (s) => {
       const rec = await Store.getStudentScores(s.id, year, subject);
-      scoreMap[s.id] = rec?.scores ?? {};
+      scoreMap[s.id] = rec;
     })
   );
 
   function studentGrade(s, exam) {
-    const examScores = scoreMap[s.id]?.[exam.id];
-    if (!examScores || Object.keys(examScores).length === 0) return null;
-    const qs = {};
-    exam.questions.forEach((q) => {
-      const v = examScores[q.id];
-      if (v !== undefined) qs[q.id] = v;
-    });
-    if (Object.keys(qs).length === 0) return null;
-    return Store.calcResults(exam, qs).grade;
+    return Store.examResults(scoreMap[s.id], exam)?.grade ?? null;
   }
 
   function bestGradeForFamily(s, family) {

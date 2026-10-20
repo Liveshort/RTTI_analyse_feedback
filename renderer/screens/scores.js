@@ -156,7 +156,7 @@ export async function openScoreModal(examId, year, deps) {
         <button class="btn-secondary" id="sc-undo" title="Ongedaan maken (Ctrl+Z)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B6;</button>
         <button class="btn-secondary" id="sc-redo" title="Opnieuw (Ctrl+Y)" style="width:32px;height:32px;padding:0;font-size:16px;">&#x21B7;</button>
         <button class="btn-secondary" id="sc-help" disabled
-          title="Navigeer sneller door gebruik te maken van de numpad:&#10;0-9: Punten invullen&#10;Punt (.): N invullen (als '. → N' aangevinkt is)&#10;Enter: Bevestigen &amp; volgende veld&#10;/ of *: Vorige / volgende veld&#10;- of +: Vorige / volgende leerling&#10;F1, F2, …: Eerste, tweede, … observatie aan/uit voor de huidige leerling"
+          title="Navigeer sneller door gebruik te maken van de numpad:&#10;0-9: Punten invullen&#10;Punt (.): N invullen (als '. → N' aangevinkt is)&#10;Enter: Bevestigen &amp; volgende veld&#10;/ of *: Vorige / volgende veld&#10;- of +: Vorige / volgende leerling&#10;F1, F2, …: Eerste, tweede, … observatie aan/uit voor de huidige leerling&#10;&#10;Cijfer overschrijven: typ een cijfer in de kolom Cijfer. Leegmaken (of rechtermuisklik) herstelt het berekende cijfer."
           style="cursor:default;color:#9aa0ab;border-color:#d0d6df;">Help ?</button>
         <label class="sc-dot-toggle"
           title="Als deze checkbox aangevinkt is, wordt de Numpad '.' een sneltoets voor &quot;Niet gemaakt&quot;. Je kunt dan geen halve punten meer invoeren met alleen het numpad.">
@@ -486,6 +486,10 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
 
     const avgIdx = gridData.length - 2;
     const stdIdx = gridData.length - 1;
+    // Overwritten grades per student row ({ cijfer, berekend }), and what
+    // recomputeRow derived from them (for the Cijfer cell's look and tooltip).
+    gridData.overrides = scoreRecs.map((rec) => rec.overrides?.[examId]);
+    gridData.gradeInfo = [];
     gridData.forEach((_, ri) => {
       if (ri < avgIdx) recomputeRow(gridData, activeExam, ri, O);
     });
@@ -526,6 +530,8 @@ export async function loadScoreGrid(jaarlaag, examId, container, year) {
  *   N+7+TOFF    = T1%
  *   N+8+TOFF    = T2%
  *   N+9+TOFF    = I%
+ * A grade overwritten by the teacher (gridData.overrides[rowIdx]) replaces the
+ * calculated one; gridData.gradeInfo[rowIdx] tells the renderer about it.
  */
 export function recomputeRow(gridData, exam, rowIdx, O = 0) {
   const N = exam.questions.length;
@@ -545,11 +551,23 @@ export function recomputeRow(gridData, exam, rowIdx, O = 0) {
     questionScores[q.id] = isNaN(n) ? raw : n;
   });
 
+  const override = gridData.overrides?.[rowIdx];
+  const setGradeInfo = (res) => {
+    if (!gridData.gradeInfo) return;
+    gridData.gradeInfo[rowIdx] = {
+      calculatedGrade: res.calculatedGrade,
+      overridden: res.overridden,
+      stale: res.overrideStale,
+      berekend: override?.berekend ?? null,
+    };
+  };
+
   if (Object.keys(questionScores).length === 0) {
+    setGradeInfo(Store.calcResults(exam, {}, override));
     row[N + 2] = ''; // spacer1
     if (O > 0) row[N + 3 + O] = ''; // spacer2
     row[N + 3 + TOFF] = '';
-    row[N + 4 + TOFF] = '';
+    row[N + 4 + TOFF] = override ? formatGrade(override.cijfer) : '';
     row[N + 5 + TOFF] = '';
     row[N + 6 + TOFF] = '';
     row[N + 7 + TOFF] = '';
@@ -558,7 +576,8 @@ export function recomputeRow(gridData, exam, rowIdx, O = 0) {
     return;
   }
 
-  const res = Store.calcResults(exam, questionScores);
+  const res = Store.calcResults(exam, questionScores, override);
+  setGradeInfo(res);
   row[N + 2] = ''; // spacer1
   if (O > 0) row[N + 3 + O] = ''; // spacer2 — obs cols untouched
   row[N + 3 + TOFF] =
@@ -640,6 +659,16 @@ function scoreCellText(v) {
   return String(v).replace('.', ',');
 }
 
+// A typed grade (comma or point) rounded to one decimal; NaN when not 1–10.
+function parseGradeInput(raw) {
+  const n = parseScoreNum(raw);
+  if (isNaN(n) || n < 1 || n > 10) return NaN;
+  return Math.round(n * 10) / 10;
+}
+
+const sameOverride = (a, b) =>
+  (a?.cijfer ?? null) === (b?.cijfer ?? null) && (a?.berekend ?? null) === (b?.berekend ?? null);
+
 /**
  * How typed input is shown in the grid (`cell`) and stored (`value`):
  * empty → removed, N → null (not evaluated), valid number → number,
@@ -652,6 +681,50 @@ function normalizeScore(input, q) {
   const num = parseScoreNum(raw);
   if (isNaN(num) || num < 0 || num > q.max_points) return { cell: raw, value: raw };
   return { cell: scoreCellText(num), value: num };
+}
+
+// Small context menu at (x, y) with the look of the exam card menus.
+// items: [{ icon, label, run }]
+function showCellMenu(x, y, items) {
+  const menu = document.createElement('div');
+  menu.className = 'exam-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = items
+    .map(
+      (it, i) =>
+        `<button class="exam-menu-item" role="menuitem" data-idx="${i}"><span class="exam-menu-icon">${escHtml(it.icon)}</span><span>${escHtml(it.label)}</span></button>`
+    )
+    .join('');
+  document.body.appendChild(menu);
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
+
+  const close = () => {
+    menu.remove();
+    document.removeEventListener('mousedown', onDocDown, true);
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('scroll', close, true);
+    window.removeEventListener('resize', close);
+  };
+  const onDocDown = (e) => {
+    if (!menu.contains(e.target)) close();
+  };
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation(); // don't close the score modal as well
+    close();
+  };
+  menu.addEventListener('click', (e) => {
+    const el = e.target.closest('.exam-menu-item');
+    if (!el) return;
+    close();
+    items[Number(el.dataset.idx)].run();
+  });
+  document.addEventListener('mousedown', onDocDown, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('scroll', close, true);
+  window.addEventListener('resize', close);
+  onModalCleanup(close);
 }
 
 export function createGroupHOT(container, exam, students, gridData, year, obsArr = []) {
@@ -667,6 +740,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
   const lastObsCol = O > 0 ? obsStart + O - 1 : -1;
   const firstDataRow = 0;
   const lastDataRow = summaryIdx - 1;
+  const gradeCol = N + 4 + (O > 0 ? O + 1 : 0);
 
   const editableCols = [
     ...Array.from({ length: N }, (_, i) => 2 + i),
@@ -737,6 +811,16 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       setCell(2 + qi, v === undefined ? '' : v === null ? 'N' : scoreCellText(v));
     });
     obsArr.forEach((o, oi) => setCell(obsStart + oi, obsIds.includes(o.id)));
+    const override = rec?.overrides?.[exam.id];
+    if (
+      !sameOverride(override, gridData.overrides[row]) &&
+      !pendingSaves.has(`${students[row].id}:${gradeCol}`) &&
+      !(editing && editing.row === row && editing.col === gradeCol)
+    ) {
+      gridData.overrides[row] = override;
+      flashUntil.set(`${row}:${gradeCol}`, Date.now() + REMOTE_FLASH_MS);
+      changed = true;
+    }
     if (!changed) return;
     rowStatus[row] = computeRowStatus(row);
     recomputeRow(gridData, exam, row, O);
@@ -902,19 +986,113 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     return apply(checked);
   }
 
+  // ── Overwritten grades ────────────────────────────────────────────────────
+  // Set (cijfer) or remove (null) the overwritten grade of the student on
+  // `row`: undoable and saved at once. `berekend` remembers the calculated
+  // grade, so a later change of it can be flagged.
+  function setGradeOverride(row, cijfer) {
+    const student = students[row];
+    if (!student) return;
+    const prev = gridData.overrides[row];
+    const calc = gridData.gradeInfo[row]?.calculatedGrade ?? null;
+    const next =
+      cijfer === null
+        ? undefined
+        : { cijfer, berekend: calc === null ? null : Math.round(calc * 10) / 10 };
+    const apply = async (ov) => {
+      gridData.overrides[row] = ov;
+      recomputeRow(gridData, exam, row, O);
+      recomputeSummaryRow(gridData, summaryIdx, stdIdx, exam, O);
+      hotInstances.forEach((h) => h.render());
+      await saveCell(row, gradeCol, () =>
+        Store.setGradeOverride(student.id, exam.id, ov?.cijfer ?? null, ov?.berekend, year)
+      );
+    };
+    pushHistory({
+      undo: () =>
+        sameOverride(gridData.overrides[row], next)
+          ? apply(prev)
+          : changedInBackground('ongedaan gemaakt'),
+      redo: () =>
+        sameOverride(gridData.overrides[row], prev)
+          ? apply(next)
+          : changedInBackground('opnieuw uitgevoerd'),
+    });
+    return apply(next);
+  }
+
+  // Typed into the Cijfer cell: a grade overwrites, empty restores the calculated one.
+  async function gradeTyped(row, oldVal, newVal) {
+    const raw = String(newVal ?? '').trim();
+    const prev = gridData.overrides[row];
+    const restore = () => {
+      recomputeRow(gridData, exam, row, O);
+      hotInstances.forEach((h) => h.render());
+    };
+    if (raw === '') {
+      if (prev) await setGradeOverride(row, null);
+      else restore(); // the calculated grade can't be removed
+      return;
+    }
+    const cijfer = parseGradeInput(raw);
+    if (isNaN(cijfer)) {
+      restore();
+      toast(`Ongeldig cijfer "${raw}": vul een cijfer van 1,0 tot en met 10,0 in.`, 'error');
+      return;
+    }
+    // Unchanged: nothing to do — except confirming a flagged override again,
+    // which accepts the new calculated grade.
+    const unchanged = prev ? cijfer === prev.cijfer : raw === String(oldVal ?? '').trim();
+    if (unchanged && !gridData.gradeInfo[row]?.stale) {
+      restore();
+      return;
+    }
+    await setGradeOverride(row, cijfer);
+  }
+
+  // Right-click on an overwritten grade: "Berekend cijfer herstellen".
+  container.addEventListener('contextmenu', (e) => {
+    const td = e.target.closest('td');
+    if (!td || hot.isDestroyed) return;
+    const coords = hot.getCoords(td);
+    if (!coords || coords.col !== gradeCol || coords.row < 0 || coords.row >= summaryIdx) return;
+    if (!gridData.overrides[coords.row]) return;
+    e.preventDefault();
+    const items = [
+      {
+        icon: '↺',
+        label: 'Berekend cijfer herstellen',
+        run: () => setGradeOverride(coords.row, null),
+      },
+    ];
+    // Accepting the new calculated grade = setting the same grade again.
+    if (gridData.gradeInfo[coords.row]?.stale) {
+      items.push({
+        icon: '✓',
+        label: 'Waarschuwing negeren',
+        run: () => setGradeOverride(coords.row, gridData.overrides[coords.row].cijfer),
+      });
+    }
+    showCellMenu(e.clientX, e.clientY, items);
+  });
+
   // ── Custom renderers ──────────────────────────────────────────────────────
+
+  // Background of the # and Naam cells: red for invalid scores, yellow for
+  // missing scores, light blue for an overwritten grade.
+  function rowBackground(row, status) {
+    if (row === summaryIdx || row === stdIdx) return '#e8ecf2';
+    if (status === 'invalid') return '#ff0033';
+    if (status === 'partial') return '#fff3cd';
+    if (gridData.gradeInfo[row]?.overridden) return '#dce9fa';
+    return '#f8f9fb';
+  }
 
   function idRenderer(hot, TD, row, col, prop, value) {
     Handsontable.renderers.TextRenderer.apply(this, arguments);
     const isSpecial = row === summaryIdx || row === stdIdx;
     const status = isSpecial ? null : rowStatus[row];
-    TD.style.background = isSpecial
-      ? '#e8ecf2'
-      : status === 'invalid'
-        ? '#ff0033'
-        : status === 'partial'
-          ? '#fff3cd'
-          : '#f8f9fb';
+    TD.style.background = rowBackground(row, status);
     TD.style.color = status === 'invalid' ? '#fff' : '';
     TD.style.textAlign = 'center';
     if (isSpecial) TD.style.color = 'transparent';
@@ -925,13 +1103,7 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     Handsontable.renderers.TextRenderer.apply(this, arguments);
     const isSpecial = row === summaryIdx || row === stdIdx;
     const status = isSpecial ? null : rowStatus[row];
-    TD.style.background = isSpecial
-      ? '#e8ecf2'
-      : status === 'invalid'
-        ? '#ff0033'
-        : status === 'partial'
-          ? '#fff3cd'
-          : '#f8f9fb';
+    TD.style.background = rowBackground(row, status);
     TD.style.color = status === 'invalid' ? '#fff' : isSpecial ? 'var(--muted, #7f8c8d)' : '#000';
     TD.style.fontWeight = isSpecial ? '700' : '400';
     TD.style.fontStyle = isSpecial ? 'italic' : 'normal';
@@ -958,6 +1130,17 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     } else {
       TD.style.background = gradeColor(value) || '#eef2f7';
     }
+    const info = row < summaryIdx ? gridData.gradeInfo[row] : null;
+    const overridden = !!info?.overridden;
+    TD.classList.toggle('grade-override', overridden);
+    TD.classList.toggle('grade-override-stale', overridden && info.stale);
+    TD.title = overridden
+      ? `Met de hand overschreven cijfer. Berekend cijfer: ${formatGrade(info.calculatedGrade)}.` +
+        (info.stale
+          ? `\nLet op: het berekende cijfer is gewijzigd sinds het overschrijven (was ${formatGrade(info.berekend)}). Vul het cijfer opnieuw in om dit te bevestigen.`
+          : '') +
+        `\nLeegmaken of rechtermuisklik herstelt het berekende cijfer.`
+      : '';
     applyHighlight(TD, row, col);
   }
 
@@ -1093,8 +1276,9 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
     ],
     cells(row, col) {
       if (row === summaryIdx || row === stdIdx) return { readOnly: true };
-      // Score input cols
+      // Score input cols, and Cijfer (typing there overwrites the grade)
       if (col >= 2 && col < 2 + N) return {};
+      if (col === gradeCol) return { readOnly: false };
       // Obs cols
       if (O > 0) {
         const obsColStart = N + 3; // new layout: directly after spacer1
@@ -1179,6 +1363,10 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
       try {
         for (const [row, col, oldVal, newVal] of changes) {
           if (row === summaryIdx || row === stdIdx) continue;
+          if (col === gradeCol) {
+            await gradeTyped(row, oldVal, newVal);
+            continue;
+          }
           if (col < 2 || col >= 2 + N) continue;
           const student = students[row];
           const q = exam.questions[col - 2];
@@ -1290,6 +1478,11 @@ export function createGroupHOT(container, exam, students, gridData, year, obsArr
         event.stopImmediatePropagation();
         event.preventDefault();
         if (isEditing) hot.getActiveEditor().finishEditing();
+        if (col === gradeCol) {
+          // Cijfer: confirm and go to the next student's grade
+          if (row < lastDataRow) goTo(row + 1, col);
+          return;
+        }
         const pos = editableCols.indexOf(col);
         const isLastEditable = pos === editableCols.length - 1;
         if (!isLastEditable) {

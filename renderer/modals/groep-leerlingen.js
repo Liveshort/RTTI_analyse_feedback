@@ -50,7 +50,7 @@ export async function openGroupStudentsModal(groupId, year) {
   const scoreMap = {};
   for (const s of students) {
     const rec = await Store.getStudentScores(s.id, year);
-    scoreMap[s.id] = rec?.scores ?? {};
+    scoreMap[s.id] = rec;
   }
 
   // Per-student dossier (SE) average from full history — mirrors openProfielModal
@@ -60,8 +60,8 @@ export async function openGroupStudentsModal(groupId, year) {
     const ptaResults = history.filter((h) => h.exam.type === 'pta');
     let sumW = 0,
       sumWG = 0;
-    for (const { exam, questionScores } of ptaResults) {
-      const res = Store.calcResults(exam, questionScores);
+    for (const { exam, questionScores, override } of ptaResults) {
+      const res = Store.calcResults(exam, questionScores, override);
       if (res.grade === null) continue;
       const w = Number(exam.weging_se ?? exam.weging ?? 1);
       sumW += w;
@@ -72,15 +72,7 @@ export async function openGroupStudentsModal(groupId, year) {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function studentGrade(s, exam) {
-    const examScores = scoreMap[s.id][exam.id];
-    if (!examScores || Object.keys(examScores).length === 0) return null;
-    const qs = {};
-    exam.questions.forEach((q) => {
-      const v = examScores[q.id];
-      if (v !== undefined) qs[q.id] = v;
-    });
-    if (Object.keys(qs).length === 0) return null;
-    return Store.calcResults(exam, qs).grade;
+    return Store.examResults(scoreMap[s.id], exam)?.grade ?? null;
   }
 
   function bestGradeForFamily(s, family) {

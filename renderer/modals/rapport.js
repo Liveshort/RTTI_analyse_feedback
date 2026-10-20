@@ -199,7 +199,11 @@ async function compileRapport(exam, year) {
         if (!questionScores) return null;
         const hasEntry = Object.values(questionScores).some((v) => v !== null && v !== undefined);
         if (!hasEntry) return null;
-        const { scored, normalMax, grade } = Store.calcResults(exam, questionScores);
+        const { scored, normalMax, grade, overridden } = Store.calcResults(
+          exam,
+          questionScores,
+          rec?.overrides?.[examId]
+        );
         const group = groups.find((g) => g.student_ids.includes(s.id));
         const obsIds = rec?.observations?.[examId] ?? [];
         const allObs = Store.getObservatiesSync(subject);
@@ -212,7 +216,16 @@ async function compileRapport(exam, year) {
             uitleg: o.uitleg,
             leeradvies: o.leeradvies ?? '',
           }));
-        return { student: s, group, scored, normalMax, grade, questionScores, observaties };
+        return {
+          student: s,
+          group,
+          scored,
+          normalMax,
+          grade,
+          overridden,
+          questionScores,
+          observaties,
+        };
       })
     )
   ).filter(Boolean);
@@ -245,6 +258,7 @@ async function compileRapport(exam, year) {
       grade:
         e.grade !== null ? (Math.round(e.grade * 10) / 10).toFixed(1).replace('.', ',') : '\u2014',
       grade_num: e.grade !== null ? Math.round(e.grade * 10) / 10 : null,
+      grade_overridden: e.overridden,
       vragen,
       observaties: e.observaties,
       leeradvies_rows: buildLeeradviesRows(vragen, adviesData, e.observaties),

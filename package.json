@@ -1,6 +1,6 @@
 {
   "name": "rtti-app",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Maatwerk score analysis tool",
   "main": "main.js",
   "scripts": {
@@ -40,6 +40,10 @@
       {
         "from": "include/fonts",
         "to": "../include/fonts"
+      },
+      {
+        "from": "include/packages",
+        "to": "../include/packages"
       }
     ],
     "files": [

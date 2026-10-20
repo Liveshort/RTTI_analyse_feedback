@@ -12,9 +12,10 @@ import {
 // ═══════════════════════════════════════════════════════════════════════════════
 // MODAL: Opdrachten genereren (opened from an exam card on the Toetsen screen)
 //
-// Couples the exam's observaties to opdrachten (saved as exam.opdrachten), shows
-// which students receive which opdracht and compiles them into one PDF: one
-// block per student, ordered by group and name, each starting on an odd page.
+// Couples the exam's observaties to opdrachten (saved as exam.opdrachten), and
+// grade cards "Cijfer onder …" too (exam.opdrachtenCijfer), shows which
+// students receive which opdracht and compiles them into one PDF: one block per
+// student, ordered by group and name, each starting on an odd page.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function openOpdrachtenGenererenModal(examId, year) {
@@ -27,6 +28,7 @@ export async function openOpdrachtenGenererenModal(examId, year) {
   const state = {
     exam,
     coupling: Store.getOpdrachtCoupling(exam), // { obsId: [opdrachtId] }
+    cijfer: Store.getOpdrachtCijferCards(exam), // [{ id, onder, opdrachten }]
     savedJson: null, // coupling as last saved (or loaded), to detect changes
     showAll: false,
     excluded: new Set(), // student ids unticked for this run
@@ -34,7 +36,7 @@ export async function openOpdrachtenGenererenModal(examId, year) {
     assignments: null, // result of Store.getOpdrachtAssignments
     busy: false,
   };
-  state.savedJson = JSON.stringify(state.coupling);
+  state.savedJson = couplingJson(state);
 
   showModal(
     `<h3 class="modal-title">Opdrachten genereren — ${escHtml(exam.title)}</h3>
@@ -42,12 +44,16 @@ export async function openOpdrachtenGenererenModal(examId, year) {
      <div class="og-settings">
        <div class="og-scroll">
          <div class="og-section-head">
-           <h4>Observaties koppelen aan opdrachten</h4>
+           <h4>Observaties en cijfers koppelen aan opdrachten</h4>
            <label class="og-inline-check">
              <input type="checkbox" data-action="og-show-all" /> Toon alle opdrachten
            </label>
          </div>
          <div class="og-obs-list"></div>
+         <div class="og-cijfer-list"></div>
+         <button type="button" class="btn-secondary btn-sm og-cijfer-add" data-action="og-cijfer-add">
+           + Cijfer onder … toevoegen
+         </button>
          <div class="og-section-head">
            <h4>Leerlingen</h4>
            <span class="og-student-toggles">
@@ -87,7 +93,68 @@ function obsLabel(obs) {
   return `${escHtml(obs.icon)} ${escHtml(obs.naam)}`;
 }
 
+const couplingJson = (state) => JSON.stringify({ obs: state.coupling, cijfer: state.cijfer });
+
+const countLabel = (n) => (n === undefined ? '' : n === 1 ? '1 leerling' : `${n} leerlingen`);
+
+const fmtOnder = (onder) => Number(onder).toFixed(1).replace('.', ',');
+
+function renderCijferList(el, state) {
+  const list = el.querySelector('.og-cijfer-list');
+  // Don't replace a threshold the user is typing in (a background refresh).
+  if (list.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  const { exam, assignments } = state;
+  const opdrachten = Store.getOpdrachtenSync();
+  const reasonIcon = Store.cijferCardReason({ onder: 0 }).icon;
+
+  list.innerHTML = state.cijfer
+    .map((card) => {
+      const selected = card.opdrachten;
+      const nStudents = assignments?.cijferStudents?.[card.id]?.length;
+      const candidates = opdrachten
+        .filter(
+          (o) => state.showAll || Store.opdrachtMatchesExam(o, exam) || selected.includes(o.id)
+        )
+        .sort((a, b) => (a.naam ?? '').localeCompare(b.naam ?? '', 'nl'));
+      const items = candidates.length
+        ? candidates
+            .map((o) => {
+              const fits = Store.opdrachtMatchesExam(o, exam);
+              return `
+            <label class="checkbox-item og-op-item">
+              <input type="checkbox" data-action="og-couple-cijfer" data-card="${escHtml(card.id)}"
+                data-op="${escHtml(o.id)}" ${selected.includes(o.id) ? 'checked' : ''} />
+              <span class="og-op-name">${escHtml(o.naam)}</span>
+              ${o.beschrijving ? `<span class="muted">${escHtml(o.beschrijving)}</span>` : ''}
+              ${fits ? '' : '<span class="og-tag">past niet bij vak/jaarlaag/schoolsoort van de toets</span>'}
+            </label>`;
+            })
+            .join('')
+        : `<p class="muted og-empty">Geen passende opdrachten. Vink "Toon alle opdrachten" aan of maak een opdracht aan op het tabblad Opdrachten.</p>`;
+      const warn =
+        nStudents > 0 && selected.length === 0
+          ? `<p class="og-warn">Geen opdracht gekoppeld: deze leerlingen krijgen hiervoor niets.</p>`
+          : '';
+      return `
+      <div class="og-obs">
+        <div class="og-obs-head">
+          <label class="og-obs-name og-cijfer-head">${reasonIcon} Cijfer onder
+            <input type="text" inputmode="decimal" class="og-cijfer-input" data-action="og-cijfer-onder"
+              data-card="${escHtml(card.id)}" value="${fmtOnder(card.onder)}" aria-label="Cijfergrens" />
+          </label>
+          <span class="muted">${countLabel(nStudents)}</span>
+          <button type="button" class="btn-link og-cijfer-remove" data-action="og-cijfer-remove"
+            data-card="${escHtml(card.id)}" title="Verwijder deze cijfergrens">✕</button>
+        </div>
+        <div class="og-op-list">${items}</div>
+        ${warn}
+      </div>`;
+    })
+    .join('');
+}
+
 function renderObsList(el, state) {
+  renderCijferList(el, state);
   const { exam, coupling, assignments } = state;
   const obsById = Object.fromEntries(
     Store.getObservatiesSync(exam.subject ?? Store.getActiveSubject()).map((o) => [o.id, o])
@@ -100,8 +167,7 @@ function renderObsList(el, state) {
     if (!obs) return '';
     const selected = coupling[obsId] ?? [];
     const nStudents = assignments?.obsStudents?.[obsId]?.length;
-    const countText =
-      nStudents === undefined ? '' : nStudents === 1 ? '1 leerling' : `${nStudents} leerlingen`;
+    const countText = countLabel(nStudents);
 
     // Candidates: matching opdrachten (or all), plus whatever is selected already.
     // Opdrachten that list this observatie come first.
@@ -152,7 +218,7 @@ function renderObsList(el, state) {
 
   list.innerHTML =
     rows.join('') ||
-    '<p class="hint">Er zijn geen observaties gekoppeld aan deze toets. Voeg ze toe via "Toets bewerken".</p>';
+    '<p class="hint">Er zijn geen observaties gekoppeld aan deze toets. Voeg ze toe via "Toets bewerken", of koppel opdrachten aan een cijfergrens hieronder.</p>';
 }
 
 function renderStudentList(el, state) {
@@ -160,7 +226,7 @@ function renderStudentList(el, state) {
   const students = state.assignments?.students ?? [];
   if (!students.length) {
     list.innerHTML =
-      '<p class="hint">Geen enkele leerling krijgt een opdracht. Koppel opdrachten aan de observaties hierboven, of geef leerlingen observaties in het scoreoverzicht.</p>';
+      '<p class="hint">Geen enkele leerling krijgt een opdracht. Koppel opdrachten aan de observaties of cijfergrenzen hierboven, of geef leerlingen observaties in het scoreoverzicht.</p>';
     renderSummary(el, state);
     return;
   }
@@ -214,7 +280,12 @@ function renderSummary(el, state) {
 let _recomputeSeq = 0;
 async function recompute(el, state, year) {
   const seq = ++_recomputeSeq;
-  const assignments = await Store.getOpdrachtAssignments(state.exam, year, state.coupling);
+  const assignments = await Store.getOpdrachtAssignments(
+    state.exam,
+    year,
+    state.coupling,
+    state.cijfer
+  );
   if (seq !== _recomputeSeq || !el.isConnected) return;
   state.assignments = assignments;
   renderObsList(el, state);
@@ -224,14 +295,15 @@ async function recompute(el, state, year) {
 // ── Saving the coupling ───────────────────────────────────────────────────────
 
 async function saveCoupling(state, year) {
-  const json = JSON.stringify(state.coupling);
+  const json = couplingJson(state);
   if (json === state.savedJson) return;
   try {
     state.exam = await Store.setExamOpdrachten(
       state.exam.id,
       state.coupling,
       year,
-      state.exam.subject
+      state.exam.subject,
+      state.cijfer
     );
     state.savedJson = json;
   } catch (e) {
@@ -359,6 +431,29 @@ function initModal(el, state, year) {
         recompute(el, state, year);
         break;
       }
+      case 'og-couple-cijfer': {
+        const card = state.cijfer.find((c) => c.id === t.dataset.card);
+        if (!card) break;
+        card.opdrachten = card.opdrachten.filter((id) => id !== t.dataset.op);
+        if (t.checked) card.opdrachten.push(t.dataset.op);
+        recompute(el, state, year);
+        break;
+      }
+      case 'og-cijfer-onder': {
+        const card = state.cijfer.find((c) => c.id === t.dataset.card);
+        if (!card) break;
+        const n = Number(t.value.trim().replace(',', '.'));
+        if (t.value.trim() === '' || isNaN(n) || n <= 1 || n > 10) {
+          toast('Vul een cijfergrens in tussen 1,0 en 10,0.', 'error');
+          t.value = fmtOnder(card.onder);
+          break;
+        }
+        card.onder = Math.round(n * 10) / 10;
+        t.value = fmtOnder(card.onder);
+        t.blur(); // lets the refresh re-render the card
+        recompute(el, state, year);
+        break;
+      }
       case 'og-student':
         if (t.checked) state.excluded.delete(t.dataset.id);
         else state.excluded.add(t.dataset.id);
@@ -370,7 +465,16 @@ function initModal(el, state, year) {
   el.addEventListener('click', (e) => {
     const action = e.target.closest('[data-action]')?.dataset.action;
     if (action === 'og-generate') generate(el, state, year, 'student');
-    else if (action === 'og-key') generate(el, state, year, 'key');
+    else if (action === 'og-cijfer-add') {
+      state.cijfer.push({ id: `cijfer-${Date.now()}`, onder: 5.5, opdrachten: [] });
+      recompute(el, state, year);
+      renderCijferList(el, state);
+    } else if (action === 'og-cijfer-remove') {
+      const id = e.target.closest('[data-card]').dataset.card;
+      state.cijfer = state.cijfer.filter((c) => c.id !== id);
+      recompute(el, state, year);
+      renderCijferList(el, state);
+    } else if (action === 'og-key') generate(el, state, year, 'key');
     else if (action === 'og-back') {
       el.querySelector('.og-result').hidden = true;
       el.querySelector('.og-settings').hidden = false;
@@ -415,7 +519,7 @@ function initModal(el, state, year) {
     if (ev.id !== exam.id || ev.year !== year) return;
     const who = await changedByName(ev);
     if (!ev.after) {
-      state.savedJson = JSON.stringify(state.coupling); // nothing left to save to
+      state.savedJson = couplingJson(state); // nothing left to save to
       showReloadNotice(`Deze toets is verwijderd door ${who}.`, closeModal);
       return;
     }
